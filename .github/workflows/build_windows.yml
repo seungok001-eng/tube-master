@@ -1,0 +1,55 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Flutter 설치
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.4'
+          channel: 'stable'
+
+      - name: 의존성 설치
+        run: flutter pub get
+
+      - name: Windows 빌드
+        run: flutter build windows --release
+
+      - name: 빌드 파일 압축
+        run: |
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "TubeMaster-Windows.zip"
+
+      - name: 릴리즈 생성 및 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Tube Master v${{ github.run_number }}"
+          body: |
+            ## Tube Master Windows 빌드
+            
+            ### 설치 방법
+            1. `TubeMaster-Windows.zip` 다운로드
+            2. 압축 해제
+            3. `tube_master.exe` 실행
+            
+            ### 포함된 기능
+            - AI 스크립트 생성 (Gemini, Claude)
+            - AI 이미지 생성 (Nano Banana, Imagen 4)
+            - AI 영상 생성 (Veo 3, Kling, Wan 등 14개 모델)
+            - TTS 음성 생성 (Gemini, ElevenLabs, CLOVA)
+            - YouTube 자동 업로드
+          files: TubeMaster-Windows.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

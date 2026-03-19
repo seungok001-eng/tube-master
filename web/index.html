@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="tube_master">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>tube_master</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <!-- TubeMaster 오디오 유틸리티 -->
+  <script>
+    // 오디오 재생 함수
+    window.tubeMasterPlayAudio = function(src) {
+      try {
+        var audio = new Audio(src);
+        audio.play().catch(function(e) {
+          console.error('오디오 재생 오류:', e);
+        });
+        window._tubeMasterCurrentAudio = audio;
+      } catch(e) {
+        console.error('tubeMasterPlayAudio 오류:', e);
+      }
+    };
+
+    // 오디오 정지 함수
+    window.tubeMasterStopAudio = function() {
+      if (window._tubeMasterCurrentAudio) {
+        window._tubeMasterCurrentAudio.pause();
+        window._tubeMasterCurrentAudio = null;
+      }
+    };
+
+    // 오디오 다운로드 함수
+    window.tubeMasterDownloadAudio = function(dataUrl, filename) {
+      try {
+        var a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = filename || 'audio.wav';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch(e) {
+        console.error('tubeMasterDownloadAudio 오류:', e);
+      }
+    };
+
+    // Blob URL을 사용한 더 안정적인 오디오 재생 (큰 파일용)
+    window.tubeMasterPlayBlob = function(base64Data, mimeType) {
+      try {
+        var binary = atob(base64Data);
+        var len = binary.length;
+        var bytes = new Uint8Array(len);
+        for (var i = 0; i < len; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        var blob = new Blob([bytes], {type: mimeType || 'audio/wav'});
+        var url = URL.createObjectURL(blob);
+        var audio = new Audio(url);
+        audio.play().catch(function(e) {
+          console.error('Blob 오디오 재생 오류:', e);
+        });
+        audio.onended = function() {
+          URL.revokeObjectURL(url);
+        };
+        window._tubeMasterCurrentAudio = audio;
+      } catch(e) {
+        console.error('tubeMasterPlayBlob 오류:', e);
+      }
+    };
+
+    // Blob URL을 사용한 다운로드 (더 안정적)
+    window.tubeMasterDownloadBlob = function(base64Data, mimeType, filename) {
+      try {
+        var binary = atob(base64Data);
+        var len = binary.length;
+        var bytes = new Uint8Array(len);
+        for (var i = 0; i < len; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        var blob = new Blob([bytes], {type: mimeType || 'audio/wav'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename || 'audio.wav';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+      } catch(e) {
+        console.error('tubeMasterDownloadBlob 오류:', e);
+      }
+    };
+
+    // ── 범용 파일 다운로드 (Uint8Array + mimeType + filename) ──
+    window.tubeMasterDownloadFile = function(uint8Array, mimeType, filename) {
+      try {
+        var blob = new Blob([uint8Array], {type: mimeType});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+      } catch(e) {
+        console.error('tubeMasterDownloadFile 오류:', e);
+      }
+    };
+
+    // ── base64 문자열 → 파일 다운로드 ──
+    window.tubeMasterDownloadBase64 = function(base64Data, mimeType, filename) {
+      try {
+        var binary = atob(base64Data);
+        var len = binary.length;
+        var bytes = new Uint8Array(len);
+        for (var i = 0; i < len; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        var blob = new Blob([bytes], {type: mimeType});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+      } catch(e) {
+        console.error('tubeMasterDownloadBase64 오류:', e);
+      }
+    };
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
