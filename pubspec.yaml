@@ -39,7 +39,6 @@ dependencies:
   
   # URL 열기 (오디오 재생용)
   url_launcher: ^6.3.1
-  web: ^1.1.1
   archive: ^4.0.9
 
 dev_dependencies:

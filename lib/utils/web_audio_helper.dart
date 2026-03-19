@@ -1,93 +1,74 @@
 import 'dart:convert';
-import 'dart:js_interop';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+
+// 웹 전용 JS interop - 조건부 import
+import 'web_audio_helper_web.dart' if (dart.library.io) 'web_audio_helper_stub.dart' as _impl;
 
 /// 웹 환경에서 오디오 재생·다운로드 및 범용 파일 다운로드를 처리하는 유틸리티
 class WebAudioHelper {
 
   // ─── 오디오 재생 ─────────────────────────────────────────
 
-  /// WAV bytes를 웹 오디오로 재생
   static void playWav(Uint8List bytes) {
     if (!kIsWeb) return;
-    _jsPlayBlob(bytes, 'audio/wav');
+    _impl.jsPlayBlob(bytes, 'audio/wav');
   }
 
-  /// MP3 bytes를 웹 오디오로 재생
   static void playMp3(Uint8List bytes) {
     if (!kIsWeb) return;
-    _jsPlayBlob(bytes, 'audio/mp3');
+    _impl.jsPlayBlob(bytes, 'audio/mp3');
   }
 
-  /// bytes를 웹 오디오로 재생 (MIME 타입 직접 지정)
   static void playBytes(Uint8List bytes, {String mimeType = 'audio/wav'}) {
     if (!kIsWeb) return;
-    _jsPlayBlob(bytes, mimeType);
+    _impl.jsPlayBlob(bytes, mimeType);
   }
 
   // ─── 재생 제어 ───────────────────────────────────────────
 
-  /// 현재 재생 중인 오디오 정지
   static void stop() {
     if (!kIsWeb) return;
-    try {
-      _tubeMasterStopAudio();
-    } catch (e) {
-      debugPrint('WebAudioHelper.stop 오류: $e');
-    }
+    _impl.jsStopAudio();
   }
 
   // ─── 오디오 다운로드 ─────────────────────────────────────
 
-  /// WAV bytes를 파일로 다운로드
   static void downloadWav(Uint8List bytes, {String fileName = 'audio.wav'}) {
     if (!kIsWeb) return;
-    _jsDownloadBlob(bytes, 'audio/wav', fileName);
+    _impl.jsDownloadBlob(bytes, 'audio/wav', fileName);
   }
 
-  /// MP3 bytes를 파일로 다운로드
   static void downloadMp3(Uint8List bytes, {String fileName = 'audio.mp3'}) {
     if (!kIsWeb) return;
-    _jsDownloadBlob(bytes, 'audio/mp3', fileName);
+    _impl.jsDownloadBlob(bytes, 'audio/mp3', fileName);
   }
 
-  /// bytes를 파일로 다운로드 (MIME 타입 직접 지정)
   static void downloadBytes(Uint8List bytes,
       {String fileName = 'audio.wav', String mimeType = 'audio/wav'}) {
     if (!kIsWeb) return;
-    _jsDownloadBlob(bytes, mimeType, fileName);
+    _impl.jsDownloadBlob(bytes, mimeType, fileName);
   }
 
   // ─── 범용 파일 다운로드 ──────────────────────────────────
 
-  /// 임의의 bytes를 파일로 다운로드 (이미지, ZIP, 텍스트 등)
   static void downloadFile(Uint8List bytes,
       {required String fileName,
       String mimeType = 'application/octet-stream'}) {
     if (!kIsWeb) return;
-    try {
-      final b64 = base64Encode(bytes);
-      _tubeMasterDownloadBase64(b64.toJS, mimeType.toJS, fileName.toJS);
-    } catch (e) {
-      debugPrint('WebAudioHelper.downloadFile 오류: $e');
-    }
+    _impl.jsDownloadBase64(base64Encode(bytes), mimeType, fileName);
   }
 
-  /// 텍스트를 파일로 다운로드
   static void downloadText(String content,
       {required String fileName,
       String mimeType = 'text/plain;charset=utf-8'}) {
     if (!kIsWeb) return;
-    final bytes = Uint8List.fromList(content.codeUnits);
-    // UTF-8 인코딩 직접 처리
     final utf8Bytes = _encodeUtf8(content);
     downloadFile(utf8Bytes, fileName: fileName, mimeType: mimeType);
   }
 
   // ─── PCM → WAV 변환 ──────────────────────────────────────
 
-  /// RAW PCM → WAV 헤더 삽입 (Gemini TTS 반환값 처리용)
   static Uint8List pcmToWav(
     Uint8List pcmData, {
     int sampleRate = 24000,
@@ -124,66 +105,42 @@ class WebAudioHelper {
     return wav;
   }
 
-  /// WAV 파일 여부 확인
   static bool isWav(Uint8List bytes) {
     if (bytes.length < 4) return false;
     return bytes[0] == 0x52 && bytes[1] == 0x49 &&
         bytes[2] == 0x46 && bytes[3] == 0x46;
   }
 
-  /// MP3 파일 여부 확인
   static bool isMp3(Uint8List bytes) {
     if (bytes.length < 3) return false;
     return (bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0) ||
         (bytes[0] == 0x49 && bytes[1] == 0x44 && bytes[2] == 0x33);
   }
 
-  /// bytes 자동 판별 재생
   static void playAuto(Uint8List bytes, {int sampleRate = 24000}) {
     if (!kIsWeb) return;
     if (isWav(bytes)) {
-      _jsPlayBlob(bytes, 'audio/wav');
+      _impl.jsPlayBlob(bytes, 'audio/wav');
     } else if (isMp3(bytes)) {
-      _jsPlayBlob(bytes, 'audio/mpeg');
+      _impl.jsPlayBlob(bytes, 'audio/mpeg');
     } else {
-      _jsPlayBlob(pcmToWav(bytes, sampleRate: sampleRate), 'audio/wav');
+      _impl.jsPlayBlob(pcmToWav(bytes, sampleRate: sampleRate), 'audio/wav');
     }
   }
 
-  /// bytes 자동 판별 다운로드
   static void downloadAuto(Uint8List bytes,
       {String fileName = 'audio', int sampleRate = 24000}) {
     if (!kIsWeb) return;
     if (isWav(bytes)) {
-      _jsDownloadBlob(bytes, 'audio/wav',
+      _impl.jsDownloadBlob(bytes, 'audio/wav',
           fileName.endsWith('.wav') ? fileName : '$fileName.wav');
     } else if (isMp3(bytes)) {
-      _jsDownloadBlob(bytes, 'audio/mpeg',
+      _impl.jsDownloadBlob(bytes, 'audio/mpeg',
           fileName.endsWith('.mp3') ? fileName : '$fileName.mp3');
     } else {
       final wav = pcmToWav(bytes, sampleRate: sampleRate);
-      _jsDownloadBlob(wav, 'audio/wav',
+      _impl.jsDownloadBlob(wav, 'audio/wav',
           fileName.endsWith('.wav') ? fileName : '$fileName.wav');
-    }
-  }
-
-  // ─── 내부 구현 ───────────────────────────────────────────
-
-  static void _jsPlayBlob(Uint8List bytes, String mimeType) {
-    try {
-      final b64 = base64Encode(bytes);
-      _tubeMasterPlayBlob(b64.toJS, mimeType.toJS);
-    } catch (e) {
-      debugPrint('WebAudioHelper._jsPlayBlob 오류: $e');
-    }
-  }
-
-  static void _jsDownloadBlob(Uint8List bytes, String mimeType, String fileName) {
-    try {
-      final b64 = base64Encode(bytes);
-      _tubeMasterDownloadBlob(b64.toJS, mimeType.toJS, fileName.toJS);
-    } catch (e) {
-      debugPrint('WebAudioHelper._jsDownloadBlob 오류: $e');
     }
   }
 
@@ -209,19 +166,3 @@ class WebAudioHelper {
     return Uint8List.fromList(result);
   }
 }
-
-// ─── JS interop ──────────────────────────────────────────
-
-@JS('tubeMasterPlayBlob')
-external void _tubeMasterPlayBlob(JSString base64Data, JSString mimeType);
-
-@JS('tubeMasterDownloadBlob')
-external void _tubeMasterDownloadBlob(
-    JSString base64Data, JSString mimeType, JSString filename);
-
-@JS('tubeMasterStopAudio')
-external void _tubeMasterStopAudio();
-
-@JS('tubeMasterDownloadBase64')
-external void _tubeMasterDownloadBase64(
-    JSString base64Data, JSString mimeType, JSString filename);
