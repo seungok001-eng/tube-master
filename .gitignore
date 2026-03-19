@@ -34,3 +34,4 @@ windows/flutter/generated_plugins.cmake
 
 # macOS
 .DS_Store
+.github/workflows/
