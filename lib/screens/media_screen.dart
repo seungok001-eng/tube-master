@@ -215,6 +215,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
   bool _isCancelled = false;   // 취소 플래그
   int _currentScene = 0;
   String _statusMsg = '';
+  int _generatingVideoScene = -1; // 현재 영상 생성 중인 씬 인덱스
   ImageModel _selectedModel = ImageModel.nanoBanana2;
   ImageRatio _selectedRatio = ImageRatio.ratio16x9;
   ImageResolution _selectedRes = ImageResolution.fhd1080;
@@ -383,6 +384,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
         setState(() {
           _statusMsg = '[2/2] AI 영상 생성 중... 장면 ${i + 1}/$_aiVideoSceneCount '
               '(${_videoModel.displayName}, ${_videoRatio}, ${_videoDuration}초)';
+          _generatingVideoScene = i;
         });
 
         try {
@@ -405,6 +407,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
             },
           );
           scene.videoBytes = videoBytes;
+          setState(() => _generatingVideoScene = -1);
           scene.videoPath = 'aivideo_${scene.id}.mp4';
           videoSuccess++;
           if (mounted) {
@@ -2129,6 +2132,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
           scene: scene,
           index: i,
           isAiVideo: isAiVideo,
+          isGeneratingVideo: _generatingVideoScene == i,
           errorMessage: _errorMessages[i],
           hasError: _errorScenes.contains(i),
           onRegenerate: () => _generateSingleImage(i),
@@ -2179,6 +2183,7 @@ class _SceneCard extends StatefulWidget {
   final int index;
   final bool isAiVideo;
   final bool hasError;
+  final bool isGeneratingVideo;
   final String? errorMessage;
   final VoidCallback onRegenerate;
   final ValueChanged<String> onPromptEdit;
@@ -2188,6 +2193,7 @@ class _SceneCard extends StatefulWidget {
     required this.index,
     required this.isAiVideo,
     this.hasError = false,
+    this.isGeneratingVideo = false,
     this.errorMessage,
     required this.onRegenerate,
     required this.onPromptEdit,
@@ -2211,6 +2217,37 @@ class _SceneCardState extends State<_SceneCard> {
   void dispose() {
     _promptCtrl.dispose();
     super.dispose();
+  }
+
+  void _saveVideo(BuildContext context) async {
+    final bytes = widget.scene.videoBytes;
+    if (bytes == null) return;
+    try {
+      // 파일 저장 다이얼로그
+      final fileName = 'scene_${widget.index + 1}_video.mp4';
+      final result = await FilePicker.platform.saveFile(
+        dialogTitle: '영상 저장',
+        fileName: fileName,
+        bytes: Uint8List.fromList(bytes),
+      );
+      if (result != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('영상이 저장됐어요: $result'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('저장 실패: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    }
   }
 
   void _showImagePreview(BuildContext context, Uint8List bytes) {
@@ -2369,7 +2406,77 @@ class _SceneCardState extends State<_SceneCard> {
               ),
             ],
             // 생성된 이미지 미리보기 (클릭 시 확대)
-            if (widget.scene.imageBytes != null) ...[
+            if (widget.isGeneratingVideo) ...[
+              Container(
+                height: 100,
+                decoration: BoxDecoration(
+                  color: AppTheme.accent.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
+                ),
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 24, height: 24,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppTheme.accent,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text('🎬 AI 영상 생성 중...',
+                          style: GoogleFonts.notoSansKr(
+                              color: AppTheme.accent, fontSize: 11)),
+                      const SizedBox(height: 2),
+                      Text('5~15분 소요될 수 있어요',
+                          style: GoogleFonts.notoSansKr(
+                              color: AppTheme.textSecondary, fontSize: 10)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ] else if (widget.scene.videoBytes != null) ...[
+              // 영상 생성 완료 - 저장 버튼 표시
+              Container(
+                height: 100,
+                decoration: BoxDecoration(
+                  color: AppTheme.accent.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
+                ),
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.videocam_rounded, color: AppTheme.accent, size: 28),
+                      const SizedBox(height: 6),
+                      Text('🎬 AI 영상 생성 완료!',
+                          style: GoogleFonts.notoSansKr(
+                              color: AppTheme.accent, fontSize: 11,
+                              fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      ElevatedButton.icon(
+                        onPressed: () => _saveVideo(context),
+                        icon: const Icon(Icons.download_rounded, size: 14),
+                        label: Text('영상 저장',
+                            style: GoogleFonts.notoSansKr(fontSize: 11)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.accent,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                          minimumSize: Size.zero,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ] else if (widget.scene.imageBytes != null) ...[
               GestureDetector(
                 onTap: () => _showImagePreview(context, widget.scene.imageBytes!),
                 child: Stack(
