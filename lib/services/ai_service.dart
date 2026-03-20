@@ -1296,58 +1296,77 @@ class LocalVideoService {
     // ── Step 1: 이미지를 ComfyUI에 업로드 ──
     String uploadedImageName;
     try {
-      final boundary = 'tube_master_${DateTime.now().millisecondsSinceEpoch}';
-      final uploadResp = await http.post(
-        Uri.parse('$comfyUrl/upload/image'),
-        headers: {'Content-Type': 'multipart/form-data; boundary=$boundary'},
-        body: '--$boundary\r\n'
-            'Content-Disposition: form-data; name="image"; filename="input.png"\r\n'
-            'Content-Type: image/png\r\n\r\n'
-            .codeUnits + imageBytes + '\r\n--$boundary--\r\n'.codeUnits,
-      ).timeout(const Duration(minutes: 2));
+      final uploadUri = Uri.parse('$comfyUrl/upload/image');
+      final request = http.MultipartRequest('POST', uploadUri);
+      request.files.add(http.MultipartFile.fromBytes(
+        'image',
+        imageBytes,
+        filename: 'tube_input_${DateTime.now().millisecondsSinceEpoch}.png',
+      ));
+      request.fields['overwrite'] = 'true';
+      request.fields['type'] = 'input';
 
-      if (uploadResp.statusCode == 200) {
-        final uploadData = jsonDecode(uploadResp.body);
+      final streamResp = await request.send().timeout(const Duration(minutes: 2));
+      final uploadBody = await streamResp.stream.bytesToString();
+
+      if (streamResp.statusCode == 200) {
+        final uploadData = jsonDecode(uploadBody);
         uploadedImageName = uploadData['name'] as String? ?? 'input.png';
+        onProgress?.call('이미지 업로드 완료: $uploadedImageName', 0.04);
       } else {
-        // 업로드 실패 시 기본 이름 사용 (fallback)
+        // 업로드 실패 시 오류 메시지 표시 후 fallback
+        onProgress?.call('이미지 업로드 실패(${streamResp.statusCode}) - fallback 사용', 0.04);
         uploadedImageName = 'input.png';
       }
-    } catch (_) {
+    } catch (e) {
+      onProgress?.call('이미지 업로드 오류: $e', 0.04);
       uploadedImageName = 'input.png';
     }
 
     onProgress?.call('워크플로우 실행 요청 중...', 0.05);
 
-    // ── Step 2: 워크플로우 JSON 전송 (실제 다운받은 파일명 사용) ──
+    // ── Step 2: 워크플로우 JSON 전송
+    // ComfyUI 화면에서 확인한 실제 노드 구조:
+    // 확산 모델 로드(UNETLoader) → WAN 비디오 생성(WanImageToVideo) → KSampler → VAE 디코드 → VHS_VideoCombine
+    // CLIP 로드 → CLIP Text Encode(Positive/Negative) → KSampler
+    // CLIP_VISION 로드 → CLIP_VISION 인코딩 → WAN 비디오 생성
+    // 이미지 로드 → CLIP_VISION 인코딩, WAN 비디오 생성
+    // VAE 로드 → VAE 디코드
     final workflow = {
       'prompt': {
+        // 노드 1: 이미지 로드
         '1': {
           'class_type': 'LoadImage',
           'inputs': {'image': uploadedImageName, 'upload': 'image'},
         },
+        // 노드 2: 확산 모델 로드 (UNETLoader)
         '2': {
           'class_type': 'UNETLoader',
           'inputs': {
             'unet_name': unetName,
-            'weight_dtype': 'fp8_e4m3fn',
+            'weight_dtype': 'default',   // fp8_e4m3fn 대신 default (ComfyUI 화면 기준)
           },
         },
+        // 노드 3: CLIP 로드
         '3': {
           'class_type': 'CLIPLoader',
           'inputs': {
             'clip_name': clipName,
             'type': 'wan',
+            'device': 'default',
           },
         },
+        // 노드 4: VAE 로드
         '4': {
           'class_type': 'VAELoader',
           'inputs': {'vae_name': vaeName},
         },
+        // 노드 5: CLIP Vision 로드
         '5': {
           'class_type': 'CLIPVisionLoader',
           'inputs': {'clip_name': clipVisionName},
         },
+        // 노드 6: Positive 텍스트 인코딩
         '6': {
           'class_type': 'CLIPTextEncode',
           'inputs': {
@@ -1355,13 +1374,15 @@ class LocalVideoService {
             'clip': ['3', 0],
           },
         },
+        // 노드 7: Negative 텍스트 인코딩
         '7': {
           'class_type': 'CLIPTextEncode',
           'inputs': {
-            'text': 'blurry, low quality, distorted, watermark',
+            'text': '色调艳丽，过度曝光，静止不动的画面，静止的画面，退化，模糊，噪点，粗糙，失真，混乱，低对比度，欠曝光，单调，丑陋，不自然，脏乱，不合理',
             'clip': ['3', 0],
           },
         },
+        // 노드 8: CLIP Vision 인코딩
         '8': {
           'class_type': 'CLIPVisionEncode',
           'inputs': {
@@ -1370,33 +1391,60 @@ class LocalVideoService {
             'crop': 'center',
           },
         },
+        // 노드 9: WAN 비디오 생성 (이미지 → 비디오) - 잠재 벡터 출력
         '9': {
           'class_type': 'WanImageToVideo',
           'inputs': {
             'model': ['2', 0],
-            'positive': ['6', 0],
-            'negative': ['7', 0],
-            'image_embeds': ['8', 0],
+            'clip_vision_output': ['8', 0],
             'image': ['1', 0],
             'vae': ['4', 0],
             'width': width,
             'height': height,
             'length': frames,
             'batch_size': 1,
-            'steps': 20,
-            'cfg': 6.0,
-            'seed': -1,
           },
         },
+        // 노드 10: KSampler
         '10': {
+          'class_type': 'KSampler',
+          'inputs': {
+            'model': ['9', 0],  // WanImageToVideo 출력 모델
+            'positive': ['6', 0],
+            'negative': ['7', 0],
+            'latent_image': ['9', 1],  // WanImageToVideo 출력 잠재 이미지
+            'seed': DateTime.now().millisecondsSinceEpoch % 1000000,
+            'steps': 20,
+            'cfg': 6.0,
+            'sampler_name': 'uni_pc',
+            'scheduler': 'simple',
+            'denoise': 1.0,
+          },
+        },
+        // 노드 11: VAE 디코드
+        '11': {
+          'class_type': 'VAEDecodeTiled',
+          'inputs': {
+            'samples': ['10', 0],
+            'vae': ['4', 0],
+            'tile_size': 272,
+            'overlap': 64,
+            'temporal_size': 64,
+            'temporal_overlap': 8,
+          },
+        },
+        // 노드 12: 비디오 합치기
+        '12': {
           'class_type': 'VHS_VideoCombine',
           'inputs': {
-            'images': ['9', 0],
+            'images': ['11', 0],
             'frame_rate': 16,
             'loop_count': 0,
             'filename_prefix': 'wan_output',
             'format': 'video/mp4',
             'save_output': true,
+            'pingpong': false,
+            'save_metadata': false,
           },
         },
       }
@@ -1453,13 +1501,37 @@ class LocalVideoService {
       throw Exception(errMsg);
     }
 
-    onProgress?.call('큐에서 대기 중...', 0.1);
+    onProgress?.call('ComfyUI 큐 접수 완료, 생성 시작...', 0.1);
 
-    // 폴링
-    final deadline = DateTime.now().add(const Duration(minutes: 20));
-    int interval = 5;
+    // 폴링 - ComfyUI /queue 엔드포인트도 함께 체크하여 진행 상태 표시
+    final deadline = DateTime.now().add(const Duration(minutes: 30));
+    int interval = 3;
+    final startTime = DateTime.now();
+
     while (DateTime.now().isBefore(deadline)) {
       await Future.delayed(Duration(seconds: interval));
+      // 경과 시간 계산
+      final elapsed = DateTime.now().difference(startTime);
+      final elapsedMin = elapsed.inMinutes;
+      final elapsedSec = elapsed.inSeconds % 60;
+      final elapsedStr = elapsedMin > 0 ? '${elapsedMin}분 ${elapsedSec}초' : '${elapsedSec}초';
+
+      // /queue 체크 - 큐 내 위치 확인
+      try {
+        final queueCheckResp = await http.get(
+          Uri.parse('$comfyUrl/queue'),
+        ).timeout(const Duration(seconds: 10));
+        if (queueCheckResp.statusCode == 200) {
+          final queueData2 = jsonDecode(queueCheckResp.body);
+          final running = (queueData2['queue_running'] as List?) ?? [];
+          final pending = (queueData2['queue_pending'] as List?) ?? [];
+          if (running.isNotEmpty) {
+            onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 900).clamp(0.0, 0.7));
+          } else if (pending.isNotEmpty) {
+            onProgress?.call('큐 대기 중 (${pending.length}개 앞에 있음, 경과: $elapsedStr)', 0.12);
+          }
+        }
+      } catch (_) {}
 
       final histResp = await http.get(
         Uri.parse('$comfyUrl/history/$promptId'),
@@ -1468,7 +1540,11 @@ class LocalVideoService {
       if (histResp.statusCode != 200) continue;
 
       final hist = jsonDecode(histResp.body) as Map<String, dynamic>;
-      if (!hist.containsKey(promptId)) continue;
+      if (!hist.containsKey(promptId)) {
+        // 아직 history에 없으면 실행 중
+        onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 900).clamp(0.0, 0.7));
+        continue;
+      }
 
       final promptResult = hist[promptId] as Map<String, dynamic>;
 
@@ -1476,8 +1552,7 @@ class LocalVideoService {
       final status = promptResult['status'] as Map<String, dynamic>?;
       if (status != null) {
         final statusStr = status['status_str'] as String? ?? '';
-        final execInfo = status['exec_info'] as Map?;
-        if (statusStr == 'error' || (execInfo != null && execInfo['queue_remaining'] == 0)) {
+        if (statusStr == 'error') {
           // 오류 메시지 추출
           final messages = status['messages'] as List?;
           String errorMsg = 'ComfyUI 실행 오류';
@@ -1494,12 +1569,9 @@ class LocalVideoService {
       }
 
       final outputs = promptResult['outputs'] as Map<String, dynamic>?;
-      if (outputs == null) {
+      if (outputs == null || outputs.isEmpty) {
         // 아직 실행 중
-        final queueRemaining = status?['exec_info']?['queue_remaining'];
-        if (queueRemaining != null) {
-          onProgress?.call('큐에서 대기 중... (남은 작업: $queueRemaining)', 0.1);
-        }
+        onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 900).clamp(0.0, 0.7));
         continue;
       }
 
@@ -1537,9 +1609,9 @@ class LocalVideoService {
         }
       }
 
-      if (interval < 15) interval = (interval * 1.2).round().clamp(5, 15);
+      if (interval < 10) interval = (interval * 1.2).round().clamp(3, 10);
     }
-    throw Exception('ComfyUI Wan 영상 생성 시간 초과');
+    throw Exception('ComfyUI Wan 영상 생성 시간 초과 (30분)\nComfyUI가 여전히 실행 중이라면 직접 결과를 확인해주세요.');
   }
 }
 
