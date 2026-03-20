@@ -372,6 +372,10 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
         openAiApiKey: widget.provider.apiKeys.openAiApiKey,
         a1111Url: channel?.videoSettings.localSdUrl ?? 'http://127.0.0.1:7860',
         comfyUrl: channel?.videoSettings.localComfyUrl ?? 'http://127.0.0.1:8188',
+        wanUnetName: channel?.videoSettings.wanUnetName ?? 'Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors',
+        wanClipName: channel?.videoSettings.wanClipName ?? 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+        wanVaeName: channel?.videoSettings.wanVaeName ?? 'Wan2.1_VAE.pth',
+        wanClipVisionName: channel?.videoSettings.wanClipVisionName ?? 'clip_vision_h.safetensors',
       );
       int videoSuccess = 0;
       int videoTotal = 0;

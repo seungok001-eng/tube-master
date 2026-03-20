@@ -1281,55 +1281,102 @@ class LocalVideoService {
     required int duration,
     required bool isWan26,  // true = Wan 2.6, false = Wan 2.1
     void Function(String status, double progress)? onProgress,
+    // 사용자 ComfyUI에 실제로 설치된 파일명 (기본값은 다운받은 실제 파일명)
+    String unetName = 'Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors',
+    String clipName = 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+    String vaeName = 'Wan2.1_VAE.pth',
+    String clipVisionName = 'clip_vision_h.safetensors',
   }) async {
-    onProgress?.call('requesting', 0.0);
+    onProgress?.call('이미지 업로드 중...', 0.02);
 
     final width  = aspectRatio == '9:16' ? 480 : 832;
     final height = aspectRatio == '9:16' ? 832 : 480;
-    final b64 = base64Encode(imageBytes);
-    final frames = (duration * 8).round(); // 8fps 기준
-    final modelName = isWan26
-        ? 'wan2.6-i2v-14B-480P-Q4_K_M.gguf'
-        : 'wan2.1-i2v-14B-480P-Q4_K_M.gguf'; // Q4 양자화 (8GB VRAM용)
+    final frames = (duration * 16).clamp(16, 81); // 16fps 기준, 최소16 최대81
 
-    // ComfyUI workflow JSON (Wan I2V)
+    // ── Step 1: 이미지를 ComfyUI에 업로드 ──
+    String uploadedImageName;
+    try {
+      final boundary = 'tube_master_${DateTime.now().millisecondsSinceEpoch}';
+      final uploadResp = await http.post(
+        Uri.parse('$comfyUrl/upload/image'),
+        headers: {'Content-Type': 'multipart/form-data; boundary=$boundary'},
+        body: '--$boundary\r\n'
+            'Content-Disposition: form-data; name="image"; filename="input.png"\r\n'
+            'Content-Type: image/png\r\n\r\n'
+            .codeUnits + imageBytes + '\r\n--$boundary--\r\n'.codeUnits,
+      ).timeout(const Duration(minutes: 2));
+
+      if (uploadResp.statusCode == 200) {
+        final uploadData = jsonDecode(uploadResp.body);
+        uploadedImageName = uploadData['name'] as String? ?? 'input.png';
+      } else {
+        // 업로드 실패 시 기본 이름 사용 (fallback)
+        uploadedImageName = 'input.png';
+      }
+    } catch (_) {
+      uploadedImageName = 'input.png';
+    }
+
+    onProgress?.call('워크플로우 실행 요청 중...', 0.05);
+
+    // ── Step 2: 워크플로우 JSON 전송 (실제 다운받은 파일명 사용) ──
     final workflow = {
       'prompt': {
         '1': {
-          'class_type': 'LoadImageBase64',
-          'inputs': {'image': b64},
+          'class_type': 'LoadImage',
+          'inputs': {'image': uploadedImageName, 'upload': 'image'},
         },
         '2': {
           'class_type': 'UNETLoader',
           'inputs': {
-            'unet_name': modelName,
+            'unet_name': unetName,
             'weight_dtype': 'fp8_e4m3fn',
           },
         },
         '3': {
           'class_type': 'CLIPLoader',
           'inputs': {
-            'clip_name': 'umt5xxl_fp8_e4m3fn.safetensors',
+            'clip_name': clipName,
             'type': 'wan',
           },
         },
         '4': {
-          'class_type': 'AutoEncoderKL',
-          'inputs': {'vae_name': 'wan_2.1_vae.safetensors'},
+          'class_type': 'VAELoader',
+          'inputs': {'vae_name': vaeName},
         },
         '5': {
+          'class_type': 'CLIPVisionLoader',
+          'inputs': {'clip_name': clipVisionName},
+        },
+        '6': {
           'class_type': 'CLIPTextEncode',
           'inputs': {
             'text': prompt,
             'clip': ['3', 0],
           },
         },
-        '6': {
+        '7': {
+          'class_type': 'CLIPTextEncode',
+          'inputs': {
+            'text': 'blurry, low quality, distorted, watermark',
+            'clip': ['3', 0],
+          },
+        },
+        '8': {
+          'class_type': 'CLIPVisionEncode',
+          'inputs': {
+            'clip_vision': ['5', 0],
+            'image': ['1', 0],
+            'crop': 'center',
+          },
+        },
+        '9': {
           'class_type': 'WanImageToVideo',
           'inputs': {
             'model': ['2', 0],
-            'positive': ['5', 0],
-            'negative': ['5', 0],
+            'positive': ['6', 0],
+            'negative': ['7', 0],
+            'image_embeds': ['8', 0],
             'image': ['1', 0],
             'vae': ['4', 0],
             'width': width,
@@ -1341,15 +1388,15 @@ class LocalVideoService {
             'seed': -1,
           },
         },
-        '7': {
+        '10': {
           'class_type': 'VHS_VideoCombine',
           'inputs': {
-            'images': ['6', 0],
-            'frame_rate': 8,
+            'images': ['9', 0],
+            'frame_rate': 16,
             'loop_count': 0,
             'filename_prefix': 'wan_output',
             'format': 'video/mp4',
-            'save_output': false,
+            'save_output': true,
           },
         },
       }
@@ -1362,15 +1409,51 @@ class LocalVideoService {
     ).timeout(const Duration(minutes: 2));
 
     if (queueResp.statusCode != 200) {
-      throw Exception('ComfyUI Wan: 요청 실패 (${queueResp.statusCode})\n'
+      // ComfyUI 오류 메시지 파싱 시도
+      String errorDetail = '';
+      try {
+        final errData = jsonDecode(queueResp.body);
+        final errNode = errData['error'];
+        if (errNode is Map) {
+          errorDetail = '\n오류: ${errNode['message'] ?? errNode}';
+        }
+        // 노드별 오류 확인
+        final nodeErrors = errData['node_errors'] as Map?;
+        if (nodeErrors != null && nodeErrors.isNotEmpty) {
+          final firstErr = nodeErrors.values.first;
+          errorDetail += '\n노드 오류: ${firstErr['errors']?.first?['message'] ?? firstErr}';
+        }
+      } catch (_) {
+        errorDetail = '\n응답: ${queueResp.body.substring(0, queueResp.body.length.clamp(0, 200))}';
+      }
+      throw Exception('ComfyUI 요청 실패 (${queueResp.statusCode})$errorDetail\n'
           'ComfyUI가 실행 중인지 확인해주세요: $comfyUrl');
     }
 
     final queueData = jsonDecode(queueResp.body);
     final promptId = queueData['prompt_id'] as String?;
-    if (promptId == null) throw Exception('ComfyUI: prompt_id를 받지 못했습니다.');
+    if (promptId == null) {
+      // prompt_id 없는 경우 오류 내용 표시
+      String errMsg = 'ComfyUI: prompt_id를 받지 못했습니다.';
+      try {
+        final errData = queueData;
+        final nodeErrors = errData['node_errors'] as Map?;
+        if (nodeErrors != null && nodeErrors.isNotEmpty) {
+          final errList = <String>[];
+          for (final entry in nodeErrors.entries) {
+            final errs = (entry.value as Map)['errors'] as List?;
+            for (final e in errs ?? []) {
+              errList.add('노드${entry.key}: ${(e as Map)['message'] ?? e}');
+            }
+          }
+          errMsg = '모델 파일을 찾을 수 없습니다:\n${errList.join('\n')}\n\n'
+              '앱 설정 → 채널 설정 → 로컬 모델 파일명을 ComfyUI에 실제 있는 파일명으로 수정해주세요.';
+        }
+      } catch (_) {}
+      throw Exception(errMsg);
+    }
 
-    onProgress?.call('processing', 0.1);
+    onProgress?.call('큐에서 대기 중...', 0.1);
 
     // 폴링
     final deadline = DateTime.now().add(const Duration(minutes: 20));
@@ -1387,8 +1470,38 @@ class LocalVideoService {
       final hist = jsonDecode(histResp.body) as Map<String, dynamic>;
       if (!hist.containsKey(promptId)) continue;
 
-      final outputs = hist[promptId]?['outputs'] as Map<String, dynamic>?;
-      if (outputs == null) continue;
+      final promptResult = hist[promptId] as Map<String, dynamic>;
+
+      // ── 실행 오류 확인 ──
+      final status = promptResult['status'] as Map<String, dynamic>?;
+      if (status != null) {
+        final statusStr = status['status_str'] as String? ?? '';
+        final execInfo = status['exec_info'] as Map?;
+        if (statusStr == 'error' || (execInfo != null && execInfo['queue_remaining'] == 0)) {
+          // 오류 메시지 추출
+          final messages = status['messages'] as List?;
+          String errorMsg = 'ComfyUI 실행 오류';
+          for (final msg in messages ?? []) {
+            if (msg is List && msg.length > 1 && msg[0] == 'execution_error') {
+              final errData = msg[1] as Map?;
+              errorMsg = '노드 오류: ${errData?['exception_message'] ?? errData?['exception_type'] ?? errorMsg}\n'
+                  '파일명을 확인해주세요 (설정 → 채널 설정 → Wan 모델 파일명)';
+              break;
+            }
+          }
+          throw Exception(errorMsg);
+        }
+      }
+
+      final outputs = promptResult['outputs'] as Map<String, dynamic>?;
+      if (outputs == null) {
+        // 아직 실행 중
+        final queueRemaining = status?['exec_info']?['queue_remaining'];
+        if (queueRemaining != null) {
+          onProgress?.call('큐에서 대기 중... (남은 작업: $queueRemaining)', 0.1);
+        }
+        continue;
+      }
 
       // 출력에서 mp4/webp/gif 파일 찾기
       for (final nodeOut in outputs.values) {
@@ -1439,12 +1552,21 @@ class VideoGenerationService {
   final String openAiApiKey;
   final String a1111Url;
   final String comfyUrl;
+  // Wan 모델 파일명 (채널 설정에서 전달)
+  final String wanUnetName;
+  final String wanClipName;
+  final String wanVaeName;
+  final String wanClipVisionName;
 
   VideoGenerationService({
     required this.falApiKey,
     required this.openAiApiKey,
     this.a1111Url = 'http://127.0.0.1:7860',
     this.comfyUrl = 'http://127.0.0.1:8188',
+    this.wanUnetName = 'Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors',
+    this.wanClipName = 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+    this.wanVaeName = 'Wan2.1_VAE.pth',
+    this.wanClipVisionName = 'clip_vision_h.safetensors',
   });
 
   Future<Uint8List> generateVideo({
@@ -1512,6 +1634,10 @@ class VideoGenerationService {
           duration: duration,
           isWan26: model == VideoModel.wan26Local,
           onProgress: onProgress,
+          unetName: wanUnetName,
+          clipName: wanClipName,
+          vaeName: wanVaeName,
+          clipVisionName: wanClipVisionName,
         );
     }
   }

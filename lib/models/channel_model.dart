@@ -826,6 +826,11 @@ class VideoSettings {
   String localSdUrl;      // 로컬 A1111 WebUI URL
   String localSdModel;
   String localComfyUrl;   // 로컬 ComfyUI URL
+  // ── Wan 모델 파일명 (ComfyUI에 실제 있는 파일명) ──
+  String wanUnetName;      // UNet 모델 파일명
+  String wanClipName;      // CLIP(T5) 파일명
+  String wanVaeName;       // VAE 파일명
+  String wanClipVisionName; // CLIP Vision 파일명
   // ── AI 영상 생성 설정 ──
   String videoRatio;   // '16:9' | '9:16' | '1:1' | '4:3'
   int    videoDuration; // 초 (5/8/10/15)
@@ -848,6 +853,10 @@ class VideoSettings {
     this.localSdUrl = 'http://127.0.0.1:7860',
     this.localSdModel = '',
     this.localComfyUrl = 'http://127.0.0.1:8188',
+    this.wanUnetName = 'Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors',
+    this.wanClipName = 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+    this.wanVaeName = 'Wan2.1_VAE.pth',
+    this.wanClipVisionName = 'clip_vision_h.safetensors',
     this.videoRatio = '16:9',
     this.videoDuration = 5,
     this.videoHd = false,
@@ -870,6 +879,10 @@ class VideoSettings {
         'localSdUrl': localSdUrl,
         'localSdModel': localSdModel,
         'localComfyUrl': localComfyUrl,
+        'wanUnetName': wanUnetName,
+        'wanClipName': wanClipName,
+        'wanVaeName': wanVaeName,
+        'wanClipVisionName': wanClipVisionName,
         'videoRatio': videoRatio,
         'videoDuration': videoDuration,
         'videoHd': videoHd,
@@ -907,6 +920,10 @@ class VideoSettings {
       localSdUrl: json['localSdUrl'] ?? 'http://127.0.0.1:7860',
       localSdModel: json['localSdModel'] ?? '',
       localComfyUrl: json['localComfyUrl'] ?? 'http://127.0.0.1:8188',
+      wanUnetName: json['wanUnetName'] ?? 'Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors',
+      wanClipName: json['wanClipName'] ?? 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+      wanVaeName: json['wanVaeName'] ?? 'Wan2.1_VAE.pth',
+      wanClipVisionName: json['wanClipVisionName'] ?? 'clip_vision_h.safetensors',
       videoRatio: json['videoRatio'] ?? '16:9',
       videoDuration: json['videoDuration'] ?? 5,
       videoHd: json['videoHd'] ?? false,
