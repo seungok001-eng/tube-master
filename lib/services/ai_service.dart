@@ -1372,12 +1372,14 @@ class LocalVideoService {
     onProgress?.call('워크플로우 실행 요청 중...', 0.05);
 
     // ── Step 2: 워크플로우 JSON 전송
-    // ComfyUI 화면에서 확인한 실제 노드 구조:
-    // 확산 모델 로드(UNETLoader) → WAN 비디오 생성(WanImageToVideo) → KSampler → VAE 디코드 → VHS_VideoCombine
-    // CLIP 로드 → CLIP Text Encode(Positive/Negative) → KSampler
-    // CLIP_VISION 로드 → CLIP_VISION 인코딩 → WAN 비디오 생성
-    // 이미지 로드 → CLIP_VISION 인코딩, WAN 비디오 생성
-    // VAE 로드 → VAE 디코드
+    // 공식 ComfyUI Wan 2.1 I2V 워크플로우 기반:
+    // https://comfyanonymous.github.io/ComfyUI_examples/wan/
+    // 노드 구조: UNETLoader → ModelSamplingSD3 → KSampler
+    //            CLIPLoader → CLIPTextEncode(pos/neg) → WanImageToVideo → KSampler
+    //            CLIPVisionLoader → CLIPVisionEncode → WanImageToVideo
+    //            LoadImage → CLIPVisionEncode, WanImageToVideo
+    //            VAELoader → WanImageToVideo, VAEDecode
+    //            KSampler → VAEDecode → VHS_VideoCombine
     final workflow = {
       'prompt': {
         // 노드 1: 이미지 로드
@@ -1385,16 +1387,24 @@ class LocalVideoService {
           'class_type': 'LoadImage',
           'inputs': {'image': uploadedImageName, 'upload': 'image'},
         },
-        // 노드 2: 확산 모델 로드 (UNETLoader)
+        // 노드 2: UNet 로드
         '2': {
           'class_type': 'UNETLoader',
           'inputs': {
             'unet_name': unetName,
-            'weight_dtype': 'default',   // fp8_e4m3fn 대신 default (ComfyUI 화면 기준)
+            'weight_dtype': 'default',
           },
         },
-        // 노드 3: CLIP 로드
+        // 노드 3: ModelSamplingSD3 (공식 워크플로우 필수 노드, shift=8)
         '3': {
+          'class_type': 'ModelSamplingSD3',
+          'inputs': {
+            'model': ['2', 0],
+            'shift': 8.0,
+          },
+        },
+        // 노드 4: CLIP 로드
+        '4': {
           'class_type': 'CLIPLoader',
           'inputs': {
             'clip_name': clipName,
@@ -1402,64 +1412,65 @@ class LocalVideoService {
             'device': 'default',
           },
         },
-        // 노드 4: VAE 로드
-        '4': {
+        // 노드 5: VAE 로드
+        '5': {
           'class_type': 'VAELoader',
           'inputs': {'vae_name': vaeName},
         },
-        // 노드 5: CLIP Vision 로드
-        '5': {
+        // 노드 6: CLIP Vision 로드
+        '6': {
           'class_type': 'CLIPVisionLoader',
           'inputs': {'clip_name': clipVisionName},
         },
-        // 노드 6: Positive 텍스트 인코딩
-        '6': {
+        // 노드 7: CLIP Vision 인코딩
+        '7': {
+          'class_type': 'CLIPVisionEncode',
+          'inputs': {
+            'clip_vision': ['6', 0],
+            'image': ['1', 0],
+            'crop': 'none',
+          },
+        },
+        // 노드 8: Positive 텍스트 인코딩
+        '8': {
           'class_type': 'CLIPTextEncode',
           'inputs': {
             'text': prompt,
-            'clip': ['3', 0],
+            'clip': ['4', 0],
           },
         },
-        // 노드 7: Negative 텍스트 인코딩
-        '7': {
+        // 노드 9: Negative 텍스트 인코딩 (공식 Wan 권장 네거티브)
+        '9': {
           'class_type': 'CLIPTextEncode',
           'inputs': {
-            'text': '色调艳丽，过度曝光，静止不动的画面，静止的画面，退化，模糊，噪点，粗糙，失真，混乱，低对比度，欠曝光，单调，丑陋，不自然，脏乱，不合理',
-            'clip': ['3', 0],
+            'text': '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走',
+            'clip': ['4', 0],
           },
         },
-        // 노드 8: CLIP Vision 인코딩
-        '8': {
-          'class_type': 'CLIPVisionEncode',
-          'inputs': {
-            'clip_vision': ['5', 0],
-            'image': ['1', 0],
-            'crop': 'center',
-          },
-        },
-        // 노드 9: WAN 비디오 생성 (이미지 → 비디오) - 잠재 벡터 출력
-        '9': {
+        // 노드 10: WanImageToVideo (공식 입력 구조 사용)
+        '10': {
           'class_type': 'WanImageToVideo',
           'inputs': {
-            'model': ['2', 0],
-            'clip_vision_output': ['8', 0],
-            'image': ['1', 0],
-            'vae': ['4', 0],
+            'positive': ['8', 0],
+            'negative': ['9', 0],
+            'vae': ['5', 0],
+            'clip_vision_output': ['7', 0],
+            'start_image': ['1', 0],
             'width': width,
             'height': height,
             'length': frames,
             'batch_size': 1,
           },
         },
-        // 노드 10: KSampler
-        '10': {
+        // 노드 11: KSampler
+        '11': {
           'class_type': 'KSampler',
           'inputs': {
-            'model': ['9', 0],  // WanImageToVideo 출력 모델
-            'positive': ['6', 0],
-            'negative': ['7', 0],
-            'latent_image': ['9', 1],  // WanImageToVideo 출력 잠재 이미지
-            'seed': DateTime.now().millisecondsSinceEpoch % 1000000,
+            'model': ['3', 0],       // ModelSamplingSD3 출력
+            'positive': ['10', 0],  // WanImageToVideo positive 출력
+            'negative': ['10', 1],  // WanImageToVideo negative 출력
+            'latent_image': ['10', 2], // WanImageToVideo latent 출력
+            'seed': DateTime.now().millisecondsSinceEpoch % 1000000000,
             'steps': 20,
             'cfg': 6.0,
             'sampler_name': 'uni_pc',
@@ -1467,23 +1478,19 @@ class LocalVideoService {
             'denoise': 1.0,
           },
         },
-        // 노드 11: VAE 디코드
-        '11': {
-          'class_type': 'VAEDecodeTiled',
+        // 노드 12: VAEDecode (공식 워크플로우는 VAEDecode 사용)
+        '12': {
+          'class_type': 'VAEDecode',
           'inputs': {
-            'samples': ['10', 0],
-            'vae': ['4', 0],
-            'tile_size': 272,
-            'overlap': 64,
-            'temporal_size': 64,
-            'temporal_overlap': 8,
+            'samples': ['11', 0],
+            'vae': ['5', 0],
           },
         },
-        // 노드 12: 비디오 합치기
-        '12': {
+        // 노드 13: 비디오 합치기
+        '13': {
           'class_type': 'VHS_VideoCombine',
           'inputs': {
-            'images': ['11', 0],
+            'images': ['12', 0],
             'frame_rate': 16,
             'loop_count': 0,
             'filename_prefix': 'wan_output',
