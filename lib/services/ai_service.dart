@@ -335,11 +335,12 @@ $styleGuide
     String voiceName = 'Kore',
     double speakingRate = 1.0,
   }) async {
-    // gemini-2.5-flash-preview-tts 먼저 시도, 실패 시 gemini-2.5-flash-preview-tts fallback
+    // 공식 문서 기준: x-goog-api-key 헤더 방식 사용
+    // https://ai.google.dev/gemini-api/docs/speech-generation
     const model = 'gemini-2.5-flash-preview-tts';
-    final url = '$_baseUrl/models/$model:generateContent?key=$apiKey';
+    final url = '$_baseUrl/models/$model:generateContent';
 
-    final body = jsonEncode({
+    final requestBody = jsonEncode({
       'contents': [
         {
           'parts': [{'text': text}]
@@ -359,68 +360,90 @@ $styleGuide
 
     final response = await http.post(
       Uri.parse(url),
-      headers: {'Content-Type': 'application/json'},
-      body: body,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,   // 헤더 방식 (공식 문서 기준)
+      },
+      body: requestBody,
     ).timeout(const Duration(minutes: 5));
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
       final candidates = data['candidates'] as List?;
       if (candidates == null || candidates.isEmpty) {
-        throw Exception('TTS 생성 결과가 없습니다.');
+        // finishReason 확인
+        final promptFeedback = data['promptFeedback'];
+        final blockReason = promptFeedback?['blockReason'];
+        if (blockReason != null) {
+          throw Exception('콘텐츠 차단됨: $blockReason');
+        }
+        throw Exception('TTS 생성 결과가 없습니다. (candidates 없음)');
       }
-      final parts = candidates[0]['content']['parts'] as List?;
-      if (parts == null) throw Exception('오디오 데이터가 없습니다.');
+
+      final content = candidates[0]['content'];
+      if (content == null) throw Exception('오디오 content가 없습니다.');
+      final parts = content['parts'] as List?;
+      if (parts == null || parts.isEmpty) throw Exception('오디오 parts가 없습니다.');
 
       for (final part in parts) {
-        if (part['inlineData'] != null) {
-          final b64 = part['inlineData']['data'] as String?;
-          final mimeType = part['inlineData']['mimeType'] as String? ?? '';
+        final inlineData = part['inlineData'];
+        if (inlineData != null) {
+          final b64 = inlineData['data'] as String?;
+          final mimeType = inlineData['mimeType'] as String? ?? '';
           if (b64 != null && b64.isNotEmpty) {
             final rawBytes = base64Decode(b64);
 
-            // Gemini TTS는 audio/L16;rate=24000 (RAW PCM) 형식으로 반환
-            // 브라우저/플레이어가 재생할 수 있도록 WAV 헤더를 씌워서 반환
+            // Gemini TTS 반환 형식: audio/L16;codec=pcm;rate=24000 (RAW PCM 16bit)
+            // just_audio / Windows Media Player가 재생할 수 있도록 WAV 헤더 추가
             if (mimeType.contains('L16') ||
                 mimeType.contains('pcm') ||
                 mimeType.contains('raw') ||
-                (!WebAudioHelper.isWav(rawBytes) &&
-                    !WebAudioHelper.isMp3(rawBytes))) {
-              // 샘플레이트 파싱 (예: audio/L16;rate=24000)
+                (!WebAudioHelper.isWav(rawBytes) && !WebAudioHelper.isMp3(rawBytes))) {
+              // mimeType에서 sampleRate 파싱 (예: audio/L16;codec=pcm;rate=24000)
               int sampleRate = 24000;
-              final rateMatch =
-                  RegExp(r'rate=(\d+)').firstMatch(mimeType);
+              final rateMatch = RegExp(r'rate=(\d+)').firstMatch(mimeType);
               if (rateMatch != null) {
                 sampleRate = int.tryParse(rateMatch.group(1)!) ?? 24000;
               }
-              return WebAudioHelper.pcmToWav(rawBytes,
-                  sampleRate: sampleRate);
+              return WebAudioHelper.pcmToWav(rawBytes, sampleRate: sampleRate);
             }
-
             return rawBytes;
           }
         }
       }
-      throw Exception('오디오 데이터를 찾을 수 없습니다.');
+      throw Exception('오디오 데이터를 찾을 수 없습니다.\nmimeType 또는 data 누락');
     } else {
+      // 오류 응답 상세 파싱
       String errMsg = 'Gemini TTS 오류 (${response.statusCode})';
       try {
         final errData = jsonDecode(response.body);
-        final code = errData['error']?['code'];
-        final msg = errData['error']?['message'] ?? '';
-        if (code == 401 || code == 403) {
-          errMsg = '❌ Gemini API 키가 올바르지 않습니다.\n설정에서 Gemini API 키를 확인해주세요.';
-        } else if (code == 429) {
-          errMsg = '⚠️ Gemini API 사용량 한도 초과. 잠시 후 다시 시도해주세요.';
-        } else if (response.statusCode == 404 || msg.contains('not found') || msg.contains('not supported')) {
-          errMsg = '⚠️ Gemini TTS 모델($model)을 사용할 수 없습니다.\n'
-              'Gemini API 키가 TTS 기능을 지원하는지 확인해주세요.\n'
+        final errorObj = errData['error'];
+        final code = errorObj?['code'];
+        final msg = errorObj?['message'] as String? ?? '';
+        final status = errorObj?['status'] as String? ?? '';
+
+        if (response.statusCode == 400 && msg.contains('API_KEY_INVALID')) {
+          errMsg = '❌ Gemini API 키가 유효하지 않습니다.\n설정에서 API 키를 확인해주세요.';
+        } else if (code == 401 || code == 403 || status == 'UNAUTHENTICATED') {
+          errMsg = '❌ Gemini API 인증 실패\nAPI 키를 확인해주세요.';
+        } else if (code == 429 || status == 'RESOURCE_EXHAUSTED') {
+          errMsg = '⚠️ Gemini API 사용량 한도 초과\n잠시 후 다시 시도해주세요.';
+        } else if (response.statusCode == 404 || msg.contains('not found')) {
+          errMsg = '⚠️ Gemini TTS 모델을 사용할 수 없습니다.\n'
+              'Gemini API 키가 TTS(유료) 기능을 지원해야 합니다.\n'
+              '→ Google AI Studio에서 결제 설정 확인\n'
               '오류: $msg';
+        } else if (msg.contains('not supported') || status == 'INVALID_ARGUMENT') {
+          errMsg = '⚠️ TTS 요청 오류: $msg\n'
+              'voiceName($voiceName)이 올바른지 확인해주세요.';
         } else {
-          errMsg = '❌ Gemini TTS 오류 (${response.statusCode}): $msg';
+          errMsg = '❌ Gemini TTS 오류 ($code / ${response.statusCode})\n$msg';
         }
       } catch (_) {
-        errMsg = 'Gemini TTS 오류 (${response.statusCode})\n${response.body.substring(0, response.body.length.clamp(0, 200))}';
+        final bodyPreview = response.body.length > 300
+            ? response.body.substring(0, 300)
+            : response.body;
+        errMsg = 'Gemini TTS 오류 (${response.statusCode})\n$bodyPreview';
       }
       throw Exception(errMsg);
     }
