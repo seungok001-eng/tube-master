@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:path_provider/path_provider.dart';
 import '../providers/app_provider.dart';
 import '../models/project_model.dart';
 import '../models/channel_model.dart';
@@ -216,6 +218,8 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
   int _currentScene = 0;
   String _statusMsg = '';
   int _generatingVideoScene = -1; // 현재 영상 생성 중인 씬 인덱스
+  double _videoSceneProgress = 0.0; // 현재 씬 영상 생성 진행률 (0.0~1.0)
+  String _videoSceneProgressText = ''; // 진행 상태 텍스트
   ImageModel _selectedModel = ImageModel.nanoBanana2;
   ImageRatio _selectedRatio = ImageRatio.ratio16x9;
   ImageResolution _selectedRes = ImageResolution.fhd1080;
@@ -385,6 +389,8 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
           _statusMsg = '[2/2] AI 영상 생성 중... 장면 ${i + 1}/$_aiVideoSceneCount '
               '(${_videoModel.displayName}, ${_videoRatio}, ${_videoDuration}초)';
           _generatingVideoScene = i;
+          _videoSceneProgress = 0.0;
+          _videoSceneProgressText = '시작 중...';
         });
 
         try {
@@ -402,12 +408,18 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
                 setState(() {
                   _statusMsg = '[2/2] 장면 ${i + 1} 영상 생성 중... '
                       '$status (${(progress * 100).toInt()}%)';
+                  _videoSceneProgress = progress;
+                  _videoSceneProgressText = status;
                 });
               }
             },
           );
           scene.videoBytes = videoBytes;
-          setState(() => _generatingVideoScene = -1);
+          setState(() {
+            _generatingVideoScene = -1;
+            _videoSceneProgress = 0.0;
+            _videoSceneProgressText = '';
+          });
           scene.videoPath = 'aivideo_${scene.id}.mp4';
           videoSuccess++;
           if (mounted) {
@@ -2133,6 +2145,8 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
           index: i,
           isAiVideo: isAiVideo,
           isGeneratingVideo: _generatingVideoScene == i,
+          videoProgress: _generatingVideoScene == i ? _videoSceneProgress : 0.0,
+          videoProgressText: _generatingVideoScene == i ? _videoSceneProgressText : null,
           errorMessage: _errorMessages[i],
           hasError: _errorScenes.contains(i),
           onRegenerate: () => _generateSingleImage(i),
@@ -2184,6 +2198,8 @@ class _SceneCard extends StatefulWidget {
   final bool isAiVideo;
   final bool hasError;
   final bool isGeneratingVideo;
+  final double videoProgress; // 0.0 ~ 1.0, 영상 생성 진행률
+  final String? videoProgressText; // 진행 상태 텍스트
   final String? errorMessage;
   final VoidCallback onRegenerate;
   final ValueChanged<String> onPromptEdit;
@@ -2194,6 +2210,8 @@ class _SceneCard extends StatefulWidget {
     required this.isAiVideo,
     this.hasError = false,
     this.isGeneratingVideo = false,
+    this.videoProgress = 0.0,
+    this.videoProgressText,
     this.errorMessage,
     required this.onRegenerate,
     required this.onPromptEdit,
@@ -2243,6 +2261,43 @@ class _SceneCardState extends State<_SceneCard> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('저장 실패: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  // 영상 임시 저장 후 기본 플레이어로 재생
+  Future<void> _playVideo(BuildContext context) async {
+    final bytes = widget.scene.videoBytes;
+    if (bytes == null) return;
+    try {
+      final tmpDir = await getTemporaryDirectory();
+      final file = File('${tmpDir.path}/scene_${widget.index + 1}_preview.mp4');
+      await file.writeAsBytes(bytes);
+      final uri = Uri.file(file.path);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        // 파일 탐색기에서 열기 (폴더 경로)
+        final folderUri = Uri.file(tmpDir.path);
+        await launchUrl(folderUri, mode: LaunchMode.externalApplication);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('영상 위치: ${file.path}'),
+              backgroundColor: AppTheme.accent,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('재생 실패: $e'),
             backgroundColor: AppTheme.error,
           ),
         );
@@ -2405,74 +2460,124 @@ class _SceneCardState extends State<_SceneCard> {
                 ),
               ),
             ],
-            // 생성된 이미지 미리보기 (클릭 시 확대)
+            // 영상 생성 중 표시
             if (widget.isGeneratingVideo) ...[
               Container(
-                height: 100,
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: AppTheme.accent.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
                 ),
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 24, height: 24,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppTheme.accent,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppTheme.accent,
+                          ),
                         ),
+                        const SizedBox(width: 8),
+                        Text('🎬 AI 영상 생성 중...',
+                            style: GoogleFonts.notoSansKr(
+                                color: AppTheme.accent, fontSize: 11,
+                                fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 진행률 바
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: widget.videoProgress > 0 ? widget.videoProgress : null,
+                        backgroundColor: AppTheme.border,
+                        color: AppTheme.accent,
+                        minHeight: 6,
                       ),
-                      const SizedBox(height: 8),
-                      Text('🎬 AI 영상 생성 중...',
-                          style: GoogleFonts.notoSansKr(
-                              color: AppTheme.accent, fontSize: 11)),
-                      const SizedBox(height: 2),
-                      Text('5~15분 소요될 수 있어요',
-                          style: GoogleFonts.notoSansKr(
-                              color: AppTheme.textSecondary, fontSize: 10)),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.videoProgress > 0
+                          ? '${(widget.videoProgress * 100).toInt()}% - ${widget.videoProgressText ?? '처리 중...'}'
+                          : (widget.videoProgressText ?? '대기 중... (5~15분 소요)'),
+                      style: GoogleFonts.notoSansKr(
+                          color: AppTheme.textSecondary, fontSize: 10),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 8),
             ] else if (widget.scene.videoBytes != null) ...[
-              // 영상 생성 완료 - 저장 버튼 표시
+              // 영상 생성 완료 - 재생 및 저장 버튼 표시
               Container(
-                height: 100,
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: AppTheme.accent.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
                 ),
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.videocam_rounded, color: AppTheme.accent, size: 28),
-                      const SizedBox(height: 6),
-                      Text('🎬 AI 영상 생성 완료!',
-                          style: GoogleFonts.notoSansKr(
-                              color: AppTheme.accent, fontSize: 11,
-                              fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 6),
-                      ElevatedButton.icon(
-                        onPressed: () => _saveVideo(context),
-                        icon: const Icon(Icons.download_rounded, size: 14),
-                        label: Text('영상 저장',
-                            style: GoogleFonts.notoSansKr(fontSize: 11)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppTheme.accent,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
-                          minimumSize: Size.zero,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.videocam_rounded, color: AppTheme.accent, size: 22),
+                        const SizedBox(width: 6),
+                        Text('🎬 AI 영상 생성 완료!',
+                            style: GoogleFonts.notoSansKr(
+                                color: AppTheme.accent, fontSize: 11,
+                                fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 영상 크기 표시
+                    Text(
+                      '크기: ${(widget.scene.videoBytes!.length / 1024 / 1024).toStringAsFixed(1)} MB',
+                      style: GoogleFonts.notoSansKr(
+                          color: AppTheme.textSecondary, fontSize: 10),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // 재생 버튼
+                        ElevatedButton.icon(
+                          onPressed: () => _playVideo(context),
+                          icon: const Icon(Icons.play_circle_filled_rounded, size: 14),
+                          label: Text('재생',
+                              style: GoogleFonts.notoSansKr(fontSize: 11)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green.shade600,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            minimumSize: Size.zero,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                        const SizedBox(width: 8),
+                        // 저장 버튼
+                        ElevatedButton.icon(
+                          onPressed: () => _saveVideo(context),
+                          icon: const Icon(Icons.download_rounded, size: 14),
+                          label: Text('저장',
+                              style: GoogleFonts.notoSansKr(fontSize: 11)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.accent,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            minimumSize: Size.zero,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 8),
