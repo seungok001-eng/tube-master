@@ -447,7 +447,14 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
           _errorMessages[i] = '🎬 영상 오류: $errStr';
           if (kDebugMode) debugPrint('[Video] 장면 ${i+1} 오류: $e');
           if (mounted) {
-            setState(() => _statusMsg = '[2/2] 장면 ${i + 1} 영상 실패 ❌');
+            setState(() {
+              _statusMsg = '[2/2] 장면 ${i + 1} 영상 실패 ❌';
+              _generatingVideoScene = -1;
+              _videoSceneProgress = 0.0;
+              _videoSceneProgressText = '';
+            });
+            // 오류 내용을 스낵바로도 표시
+            _showSnack('❌ 장면 ${i+1} 영상 실패: ${errStr.length > 100 ? errStr.substring(0, 100) + '...' : errStr}');
           }
         }
       }
@@ -455,7 +462,10 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
       if (mounted) {
         setState(() {
           _isGenerating = false;
-          if (_isCancelled) {
+          _generatingVideoScene = -1;  // 취소/완료 시 항상 초기화
+          _videoSceneProgress = 0.0;
+          _videoSceneProgressText = '';
+          if (_isCancelled || _isVideoCancelled) {
             _statusMsg = '⏹ 취소됨. (이미지 $imgSuccess장, 영상 $videoSuccess/$videoTotal)';
           } else {
             _statusMsg = '✅ 완료! 이미지 $imgSuccess/${scenes.length}장, '
@@ -734,6 +744,12 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
     setState(() {
       _isCancelled = true;
       _isVideoCancelled = true;
+      // 취소 즉시 생성 중 표시 해제 (타임아웃 전에 UI 업데이트)
+      _generatingVideoScene = -1;
+      _videoSceneProgress = 0.0;
+      _videoSceneProgressText = '';
+      _isVideoGenerating = false;
+      _statusMsg = '⏹ 영상 생성이 취소되었습니다. (ComfyUI 작업은 백그라운드에서 중단됩니다)';
     });
     _showSnack('⏹ 영상 생성을 취소했습니다.');
   }
