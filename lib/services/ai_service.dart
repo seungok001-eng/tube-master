@@ -1390,14 +1390,27 @@ class LocalVideoService {
       final outputs = hist[promptId]?['outputs'] as Map<String, dynamic>?;
       if (outputs == null) continue;
 
-      // 출력에서 mp4 파일 찾기
+      // 출력에서 mp4/webp/gif 파일 찾기
       for (final nodeOut in outputs.values) {
-        final gifs = (nodeOut as Map<String, dynamic>)['gifs'] as List?
-            ?? (nodeOut)['videos'] as List?;
-        if (gifs != null && gifs.isNotEmpty) {
-          final fileInfo = gifs[0] as Map<String, dynamic>;
-          final filename = fileInfo['filename'] as String?;
-          final subfolder = fileInfo['subfolder'] as String? ?? '';
+        final node = nodeOut as Map<String, dynamic>;
+        // gifs, videos, images 키 모두 확인 (webp 포함)
+        final fileList = node['gifs'] as List?
+            ?? node['videos'] as List?
+            ?? node['images'] as List?;
+        if (fileList != null && fileList.isNotEmpty) {
+          // mp4/webp/gif 우선순위로 찾기
+          Map<String, dynamic>? bestFile;
+          for (final f in fileList) {
+            final fn = (f as Map<String, dynamic>)['filename'] as String? ?? '';
+            if (fn.endsWith('.mp4') || fn.endsWith('.webp') || fn.endsWith('.gif')) {
+              bestFile = f;
+              break;
+            }
+          }
+          bestFile ??= fileList[0] as Map<String, dynamic>;
+
+          final filename = bestFile['filename'] as String?;
+          final subfolder = bestFile['subfolder'] as String? ?? '';
           if (filename != null) {
             final dlUrl = '$comfyUrl/view?filename=$filename&subfolder=$subfolder&type=output';
             onProgress?.call('downloading', 0.9);
