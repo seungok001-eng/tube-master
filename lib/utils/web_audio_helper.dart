@@ -1,12 +1,76 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
 
 // 웹 전용 JS interop - 조건부 import
 import 'web_audio_helper_web.dart' if (dart.library.io) 'web_audio_helper_stub.dart' as _impl;
 
 /// 웹 환경에서 오디오 재생·다운로드 및 범용 파일 다운로드를 처리하는 유틸리티
 class WebAudioHelper {
+  // Windows/Desktop 오디오 플레이어 (싱글톤)
+  static AudioPlayer? _desktopPlayer;
+
+  static Future<AudioPlayer> _getDesktopPlayer() async {
+    _desktopPlayer ??= AudioPlayer();
+    return _desktopPlayer!;
+  }
+
+  /// Windows/Desktop에서 오디오 바이트를 임시 파일로 재생
+  static Future<void> playDesktop(Uint8List bytes, {String ext = 'mp3'}) async {
+    try {
+      final tmpDir = await getTemporaryDirectory();
+      final file = File('${tmpDir.path}/tts_preview_${DateTime.now().millisecondsSinceEpoch}.$ext');
+      await file.writeAsBytes(bytes);
+      final player = await _getDesktopPlayer();
+      await player.stop();
+      await player.setFilePath(file.path);
+      await player.play();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[WebAudioHelper] Desktop play error: $e');
+    }
+  }
+
+  /// Windows/Desktop에서 재생 중지
+  static Future<void> stopDesktop() async {
+    try {
+      await _desktopPlayer?.stop();
+    } catch (_) {}
+  }
+
+  /// 플랫폼 자동 감지하여 재생 (Web: JS blob, Desktop: just_audio)
+  static Future<void> playAutoAsync(Uint8List bytes, {int sampleRate = 24000}) async {
+    if (kIsWeb) {
+      playAuto(bytes, sampleRate: sampleRate);
+    } else {
+      // MP3 또는 WAV 판별
+      if (isMp3(bytes)) {
+        await playDesktop(bytes, ext: 'mp3');
+      } else if (isWav(bytes)) {
+        await playDesktop(bytes, ext: 'wav');
+      } else {
+        // PCM → WAV 변환
+        final wav = pcmToWav(bytes, sampleRate: sampleRate);
+        await playDesktop(wav, ext: 'wav');
+      }
+    }
+  }
+
+  /// 재생 중지 (플랫폼 자동)
+  static Future<void> stopAll() async {
+    if (kIsWeb) {
+      stop();
+    } else {
+      await stopDesktop();
+    }
+  }
+
+  /// 데스크톱에서 재생 중인지 확인
+  static bool get isDesktopPlaying =>
+      _desktopPlayer?.playing == true;
+
 
   // ─── 오디오 재생 ─────────────────────────────────────────
 

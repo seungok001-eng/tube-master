@@ -40,6 +40,9 @@ dependencies:
   # URL 열기 (오디오 재생용)
   url_launcher: ^6.3.1
   archive: ^4.0.9
+  
+  # 오디오 재생 (Windows/Android 지원)
+  just_audio: ^0.9.40
 
 dev_dependencies:
   flutter_test:

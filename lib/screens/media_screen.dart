@@ -2964,11 +2964,18 @@ class _TtsTabState extends State<_TtsTab> {
     // ── 캐시 히트: 동일 목소리+언어는 저장된 오디오를 재사용 ──
     final cacheKey = '${voiceName}_$lang';
     if (_sampleCache.containsKey(cacheKey)) {
-      if (kIsWeb) {
-        WebAudioHelper.playAuto(_sampleCache[cacheKey]!, sampleRate: 24000);
-        _showSnack('🔊 $voiceName 샘플 재생 (캐시)');
+      setState(() => _isSampling = true);
+      try {
+        await WebAudioHelper.playAutoAsync(_sampleCache[cacheKey]!, sampleRate: 24000);
+        _showSnack('🔊 $voiceName 샘플 재생 중...');
+        Future.delayed(const Duration(seconds: 6), () {
+          if (mounted && _isSampling) setState(() => _isSampling = false);
+        });
+      } catch (e) {
+        _showSnack('재생 실패: $e');
+        if (mounted) setState(() => _isSampling = false);
       }
-      return;  // API 호출 없이 바로 종료
+      return;
     }
 
     setState(() => _isSampling = true);
@@ -2982,24 +2989,13 @@ class _TtsTabState extends State<_TtsTab> {
       // ── 캐시에 저장 (같은 목소리 반복 시 일관된 소리) ──
       _sampleCache[cacheKey] = bytes;
 
-      if (kIsWeb) {
-        WebAudioHelper.playAuto(bytes, sampleRate: 24000);
-        _showSnack('🔊 $voiceName 샘플 재생 중... (정지 버튼으로 멈출 수 있습니다)');
-        Future.delayed(const Duration(seconds: 6), () {
-          if (mounted && _isSampling) setState(() => _isSampling = false);
-        });
-      } else {
-        final b64 = base64Encode(bytes);
-        final uri = Uri.parse('data:audio/wav;base64,$b64');
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-        } else {
-          _showSnack('오디오 재생을 지원하지 않는 환경입니다.');
-        }
-      }
+      await WebAudioHelper.playAutoAsync(bytes, sampleRate: 24000);
+      _showSnack('🔊 $voiceName 샘플 재생 중...');
+      Future.delayed(const Duration(seconds: 6), () {
+        if (mounted && _isSampling) setState(() => _isSampling = false);
+      });
     } catch (e) {
       _showSnack('샘플 재생 실패: ${e.toString().replaceAll('Exception: ', '')}');
-    } finally {
       if (mounted) setState(() => _isSampling = false);
     }
   }
@@ -3394,7 +3390,7 @@ class _TtsTabState extends State<_TtsTab> {
             const SizedBox(width: 6),
             GestureDetector(
               onTap: () {
-                WebAudioHelper.stop();
+                WebAudioHelper.stopAll();
                 setState(() => _isSampling = false);
               },
               child: Container(
@@ -3572,12 +3568,19 @@ class _TtsTabState extends State<_TtsTab> {
       return;
     }
 
-    // ── 캐시 히트: 동일 목소리는 저장된 오디오 재사용 ──
+    // ── 캐시 히트 ──
     final cacheKey = 'clova_${speakerId}_$lang';
     if (_sampleCache.containsKey(cacheKey)) {
-      if (kIsWeb) {
-        WebAudioHelper.playAuto(_sampleCache[cacheKey]!);
-        _showSnack('🔊 $speakerName 샘플 재생 (캐시)');
+      setState(() => _isSampling = true);
+      try {
+        await WebAudioHelper.playAutoAsync(_sampleCache[cacheKey]!);
+        _showSnack('🔊 $speakerName 샘플 재생 중...');
+        Future.delayed(const Duration(seconds: 5), () {
+          if (mounted && _isSampling) setState(() => _isSampling = false);
+        });
+      } catch (e) {
+        _showSnack('재생 실패: $e');
+        if (mounted) setState(() => _isSampling = false);
       }
       return;
     }
@@ -3597,20 +3600,13 @@ class _TtsTabState extends State<_TtsTab> {
       // ── 캐시에 저장 ──
       _sampleCache[cacheKey] = bytes;
 
-      final b64 = base64Encode(bytes);
-      if (kIsWeb) {
-        // 웹: JS Audio API 사용 (MP3)
-        WebAudioHelper.playAuto(bytes);
-        _showSnack('🔊 $speakerName 샘플 재생 중...');
-      } else {
-        final uri = Uri.parse('data:audio/mp3;base64,$b64');
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-        }
-      }
+      await WebAudioHelper.playAutoAsync(bytes);
+      _showSnack('🔊 $speakerName 샘플 재생 중...');
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted && _isSampling) setState(() => _isSampling = false);
+      });
     } catch (e) {
       _showSnack('샘플 재생 실패: ${e.toString().replaceAll('Exception: ', '')}');
-    } finally {
       if (mounted) setState(() => _isSampling = false);
     }
   }
@@ -3637,7 +3633,7 @@ class _TtsTabState extends State<_TtsTab> {
             const SizedBox(width: 6),
             GestureDetector(
               onTap: () {
-                WebAudioHelper.stop();
+                WebAudioHelper.stopAll();
                 setState(() => _isSampling = false);
               },
               child: Container(
@@ -4550,7 +4546,7 @@ class _AudioPlayerState extends State<_AudioPlayer>
   void dispose() {
     _waveCtrl.dispose();
     // 위젯 제거 시 재생 중이면 정지
-    if (_playing) WebAudioHelper.stop();
+    if (_playing) WebAudioHelper.stopAll();
     super.dispose();
   }
 
@@ -4572,42 +4568,31 @@ class _AudioPlayerState extends State<_AudioPlayer>
     );
   }
 
-  /// base64 data URL을 새 탭으로 열어 재생
+  /// 오디오 재생 (Web/Desktop 통합)
   void _playAudio() async {
     try {
-      if (kIsWeb) {
-        // 웹: JS Audio API 사용 (WAV 헤더 자동 적용)
-        WebAudioHelper.playAuto(widget.audioBytes, sampleRate: 24000);
-        setState(() => _playing = true);
-        _waveCtrl.repeat(reverse: true);
-        // 재생 시간 추정 후 상태 복원
-        // WAV: (bytes - 44헤더) / (sampleRate * channels * bitsPerSample/8)
+      setState(() => _playing = true);
+      _waveCtrl.repeat(reverse: true);
+
+      await WebAudioHelper.playAutoAsync(widget.audioBytes, sampleRate: 24000);
+
+      // 재생 시간 추정 후 상태 복원
+      int estimatedSecs = 5;
+      if (WebAudioHelper.isWav(widget.audioBytes)) {
         final pcmBytes = widget.audioBytes.length > 44
             ? widget.audioBytes.length - 44
             : widget.audioBytes.length;
-        final estimatedSecs = pcmBytes ~/ (24000 * 1 * 2); // 24kHz mono 16bit
-        Future.delayed(
-            Duration(seconds: estimatedSecs.clamp(2, 300)),
-            () {
-          if (mounted) {
-            setState(() => _playing = false);
-            _waveCtrl.stop();
-          }
-        });
-      } else {
-        final b64 = base64Encode(widget.audioBytes);
-        final dataUrl = 'data:audio/wav;base64,$b64';
-        setState(() => _playing = true);
-        final uri = Uri.parse(dataUrl);
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-        } else {
-          _showSnack('브라우저에서 직접 열 수 없습니다. 다운로드를 이용해주세요.');
-        }
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) setState(() => _playing = false);
-        });
+        estimatedSecs = (pcmBytes ~/ (24000 * 1 * 2)).clamp(2, 300);
+      } else if (WebAudioHelper.isMp3(widget.audioBytes)) {
+        // MP3: 대략 128kbps 기준 추정
+        estimatedSecs = (widget.audioBytes.length ~/ 16000).clamp(2, 300);
       }
+      Future.delayed(Duration(seconds: estimatedSecs), () {
+        if (mounted) {
+          setState(() => _playing = false);
+          _waveCtrl.stop();
+        }
+      });
     } catch (e) {
       _showSnack('재생 오류: $e');
       if (mounted) {
@@ -4620,9 +4605,7 @@ class _AudioPlayerState extends State<_AudioPlayer>
   /// 재생 중인 오디오 정지
   void _stopAudio() {
     if (!_playing) return;
-    if (kIsWeb) {
-      WebAudioHelper.stop();
-    }
+    WebAudioHelper.stopAll();
     if (mounted) {
       setState(() => _playing = false);
       _waveCtrl.stop();
