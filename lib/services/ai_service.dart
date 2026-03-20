@@ -335,6 +335,7 @@ $styleGuide
     String voiceName = 'Kore',
     double speakingRate = 1.0,
   }) async {
+    // gemini-2.5-flash-preview-tts 먼저 시도, 실패 시 gemini-2.5-flash-preview-tts fallback
     const model = 'gemini-2.5-flash-preview-tts';
     final url = '$_baseUrl/models/$model:generateContent?key=$apiKey';
 
@@ -408,13 +409,19 @@ $styleGuide
         final code = errData['error']?['code'];
         final msg = errData['error']?['message'] ?? '';
         if (code == 401 || code == 403) {
-          errMsg = '❌ Gemini API 키가 올바르지 않습니다.';
+          errMsg = '❌ Gemini API 키가 올바르지 않습니다.\n설정에서 Gemini API 키를 확인해주세요.';
         } else if (code == 429) {
-          errMsg = '⚠️ API 사용량 한도 초과. 잠시 후 다시 시도해주세요.';
+          errMsg = '⚠️ Gemini API 사용량 한도 초과. 잠시 후 다시 시도해주세요.';
+        } else if (response.statusCode == 404 || msg.contains('not found') || msg.contains('not supported')) {
+          errMsg = '⚠️ Gemini TTS 모델($model)을 사용할 수 없습니다.\n'
+              'Gemini API 키가 TTS 기능을 지원하는지 확인해주세요.\n'
+              '오류: $msg';
         } else {
-          errMsg = '❌ Gemini TTS 오류: $msg';
+          errMsg = '❌ Gemini TTS 오류 (${response.statusCode}): $msg';
         }
-      } catch (_) {}
+      } catch (_) {
+        errMsg = 'Gemini TTS 오류 (${response.statusCode})\n${response.body.substring(0, response.body.length.clamp(0, 200))}';
+      }
       throw Exception(errMsg);
     }
   }
@@ -664,18 +671,34 @@ class ClovaTtsService {
     if (response.statusCode == 200) {
       return response.bodyBytes;
     } else {
+      // 실제 오류 응답 내용을 최대한 상세히 파싱
       String errMsg = 'CLOVA TTS 오류 (${response.statusCode})';
+      String rawBody = '';
       try {
-        final errData = jsonDecode(response.body);
-        final msg = errData['error']?['message'] ?? '';
+        rawBody = response.body;
+        final errData = jsonDecode(rawBody);
+        final errorObj = errData['error'];
+        final msg = errorObj is Map
+            ? (errorObj['message'] ?? errorObj['details'] ?? '')
+            : (errData['message'] ?? rawBody);
+        final errorCode = errData['errorCode'] ?? errData['code'] ?? '';
+
         if (response.statusCode == 401 || response.statusCode == 403) {
-          errMsg = '❌ CLOVA API 키(Client ID/Secret)가 올바르지 않습니다.';
+          errMsg = '❌ CLOVA API 인증 실패 (${response.statusCode})\n'
+              '- Client ID: $clientId\n'
+              '- 오류: $msg\n'
+              '코드: $errorCode\n\n'
+              '네이버 클라우드 콘솔에서 Application에 CLOVA Voice 서비스가 등록되어 있는지 확인하세요.';
         } else if (response.statusCode == 429) {
           errMsg = '⚠️ CLOVA API 사용량 한도 초과입니다.';
+        } else if (response.statusCode == 400) {
+          errMsg = '❌ CLOVA TTS 요청 오류 (400): $msg\n코드: $errorCode';
         } else {
-          errMsg = '❌ CLOVA TTS 오류: $msg';
+          errMsg = '❌ CLOVA TTS 오류 (${response.statusCode}): $msg\n코드: $errorCode';
         }
-      } catch (_) {}
+      } catch (_) {
+        errMsg = 'CLOVA TTS 오류 (${response.statusCode})\n응답: ${rawBody.length > 300 ? rawBody.substring(0, 300) : rawBody}';
+      }
       throw Exception(errMsg);
     }
   }

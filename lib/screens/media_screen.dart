@@ -3138,8 +3138,34 @@ class _TtsTabState extends State<_TtsTab> {
         if (mounted && _isSampling) setState(() => _isSampling = false);
       });
     } catch (e) {
-      _showSnack('샘플 재생 실패: ${e.toString().replaceAll('Exception: ', '')}');
-      if (mounted) setState(() => _isSampling = false);
+      final errMsg = e.toString().replaceAll('Exception: ', '');
+      if (mounted) {
+        // 오류 내용을 다이얼로그로 표시 (스낵바는 너무 짧아서 잘림)
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppTheme.bgCard,
+            title: Text('🔊 미리듣기 실패',
+                style: GoogleFonts.notoSansKr(
+                    color: AppTheme.error, fontWeight: FontWeight.bold)),
+            content: SingleChildScrollView(
+              child: Text(
+                errMsg,
+                style: GoogleFonts.notoSansKr(
+                    color: AppTheme.textPrimary, fontSize: 13),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('확인',
+                    style: GoogleFonts.notoSansKr(color: AppTheme.accent)),
+              ),
+            ],
+          ),
+        );
+        setState(() => _isSampling = false);
+      }
     }
   }
 
