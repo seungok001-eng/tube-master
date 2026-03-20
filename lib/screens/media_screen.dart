@@ -214,7 +214,9 @@ class _ImageGenerationTab extends StatefulWidget {
 
 class _ImageGenerationTabState extends State<_ImageGenerationTab> {
   bool _isGenerating = false;
-  bool _isCancelled = false;   // 취소 플래그
+  bool _isCancelled = false;   // 전체 생성 취소 플래그
+  bool _isVideoGenerating = false; // 단독 영상 생성 중 여부
+  bool _isVideoCancelled = false;  // 영상 취소 플래그 (단독/전체 공용)
   int _currentScene = 0;
   String _statusMsg = '';
   int _generatingVideoScene = -1; // 현재 영상 생성 중인 씬 인덱스
@@ -333,6 +335,14 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
       _errorMessages.clear();
     });
 
+    // ✅ 전체 재생성 시 모든 씬 상태 초기화 (이전 생성 결과 제거)
+    for (final scene in widget.project.scenes) {
+      scene.isGenerated = false;
+      scene.imageBytes = null;
+      scene.videoBytes = null;
+      scene.videoPath = '';
+    }
+
     // AI 영상 플래그 설정
     for (int i = 0; i < widget.project.scenes.length; i++) {
       widget.project.scenes[i].useAiVideo = (i < _aiVideoSceneCount);
@@ -341,7 +351,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
     final geminiService = GeminiService(apiKey);
     final scenes = widget.project.scenes;
 
-    // ── 1단계: 전체 장면 이미지 생성 (AI영상 장면 포함, 기준 이미지로 사용) ──
+    // ── 1단계: 전체 장면 이미지 생성 ──
     int imgSuccess = 0;
     for (int start = 0; start < scenes.length; start += _concurrency) {
       if (!mounted || _isCancelled) break;
@@ -350,6 +360,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
 
       setState(() {
         _currentScene = end;
+        // ✅ 수정: start+1 ~ end 표시 (end가 scenes.length를 초과하지 않도록)
         _statusMsg = '[1/2] 이미지 생성 ${start + 1}~$end / ${scenes.length}장 ($_concurrency개 동시)';
       });
 
@@ -381,7 +392,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
       int videoTotal = 0;
 
       for (int i = 0; i < scenes.length && i < _aiVideoSceneCount; i++) {
-        if (_isCancelled) break;
+        if (_isCancelled || _isVideoCancelled) break;
         final scene = scenes[i];
         if (scene.imageBytes == null) {
           // 이미지 생성 실패 장면은 영상도 건너뜀
@@ -641,9 +652,94 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
     }
   }
 
+  /// 단일 장면 영상 재생성
+  Future<void> _regenerateSingleVideo(int index) async {
+    if (_isVideoGenerating || _isGenerating) {
+      _showSnack('다른 생성 작업이 진행 중입니다.');
+      return;
+    }
+    final scene = widget.project.scenes[index];
+    if (scene.imageBytes == null) {
+      _showSnack('이미지가 없습니다. 먼저 이미지를 생성해주세요.');
+      return;
+    }
+
+    final channel = widget.provider.channels
+        .where((c) => c.id == widget.project.channelId).firstOrNull;
+    final videoService = VideoGenerationService(
+      falApiKey: widget.provider.apiKeys.falApiKey,
+      openAiApiKey: widget.provider.apiKeys.openAiApiKey,
+      a1111Url: channel?.videoSettings.localSdUrl ?? 'http://127.0.0.1:7860',
+      comfyUrl: channel?.videoSettings.localComfyUrl ?? 'http://127.0.0.1:8188',
+      wanUnetName: channel?.videoSettings.wanUnetName ?? 'Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors',
+      wanClipName: channel?.videoSettings.wanClipName ?? 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+      wanVaeName: channel?.videoSettings.wanVaeName ?? 'Wan2.1_VAE.pth',
+      wanClipVisionName: channel?.videoSettings.wanClipVisionName ?? 'clip_vision_h.safetensors',
+    );
+
+    setState(() {
+      _isVideoGenerating = true;
+      _isVideoCancelled = false;
+      _generatingVideoScene = index;
+      _videoSceneProgress = 0.0;
+      _videoSceneProgressText = '시작 중...';
+      _statusMsg = '장면 ${index + 1} 영상 재생성 중...';
+    });
+
+    try {
+      final videoBytes = await videoService.generateVideo(
+        model: _videoModel,
+        imageBytes: scene.imageBytes!,
+        prompt: scene.imagePrompt.isNotEmpty
+            ? scene.imagePrompt
+            : 'Smooth cinematic motion based on the scene',
+        aspectRatio: _videoRatio,
+        duration: _videoDuration,
+        hd: _videoHd,
+        onProgress: (status, progress) {
+          if (mounted && !_isVideoCancelled) {
+            setState(() {
+              _videoSceneProgress = progress;
+              _videoSceneProgressText = status;
+              _statusMsg = '장면 ${index + 1} 영상 생성 중... $status (${(progress * 100).toInt()}%)';
+            });
+          }
+        },
+      );
+
+      if (!_isVideoCancelled) {
+        scene.videoBytes = videoBytes;
+        scene.videoPath = 'aivideo_${scene.id}.mp4';
+        setState(() => _statusMsg = '✅ 장면 ${index + 1} 영상 재생성 완료!');
+        widget.provider.updateProject(widget.project);
+      }
+    } catch (e) {
+      if (!_isVideoCancelled) {
+        final errStr = e.toString().replaceAll('Exception: ', '');
+        setState(() => _statusMsg = '❌ 장면 ${index + 1} 영상 실패: $errStr');
+        _showSnack('영상 생성 실패: $errStr');
+      }
+    } finally {
+      setState(() {
+        _isVideoGenerating = false;
+        _generatingVideoScene = -1;
+        _videoSceneProgress = 0.0;
+        _videoSceneProgressText = '';
+      });
+    }
+  }
+
+  /// 영상 생성 취소 (전체 또는 단독)
+  void _cancelVideoGeneration() {
+    setState(() {
+      _isCancelled = true;
+      _isVideoCancelled = true;
+    });
+    _showSnack('⏹ 영상 생성을 취소했습니다.');
+  }
+
   /// 실패한 장면만 재시도
   Future<void> _retryFailedScenes() async {
-    if (_errorScenes.isEmpty) return;
     final failedIndices = List<int>.from(_errorScenes);
     setState(() {
       _isGenerating = true;
@@ -2158,6 +2254,12 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
             scene.imagePrompt = newPrompt;
             widget.provider.updateProject(widget.project);
           },
+          onCancelVideo: (_generatingVideoScene == i)
+              ? _cancelVideoGeneration
+              : null,
+          onRegenerateVideo: (isAiVideo && !_isGenerating && !_isVideoGenerating && scene.imageBytes != null)
+              ? () => _regenerateSingleVideo(i)
+              : null,
         );
       },
     );
@@ -2202,11 +2304,14 @@ class _SceneCard extends StatefulWidget {
   final bool isAiVideo;
   final bool hasError;
   final bool isGeneratingVideo;
-  final double videoProgress; // 0.0 ~ 1.0, 영상 생성 진행률
-  final String? videoProgressText; // 진행 상태 텍스트
+  final double videoProgress;
+  final String? videoProgressText;
   final String? errorMessage;
   final VoidCallback onRegenerate;
   final ValueChanged<String> onPromptEdit;
+  // ── 영상 관련 콜백 ──
+  final VoidCallback? onCancelVideo;       // 영상 생성 취소
+  final VoidCallback? onRegenerateVideo;  // 영상 재생성
 
   const _SceneCard({
     required this.scene,
@@ -2219,6 +2324,8 @@ class _SceneCard extends StatefulWidget {
     this.errorMessage,
     required this.onRegenerate,
     required this.onPromptEdit,
+    this.onCancelVideo,
+    this.onRegenerateVideo,
   });
 
   @override
@@ -2465,7 +2572,7 @@ class _SceneCardState extends State<_SceneCard> {
               ),
             ],
             // 영상 생성 중 표시
-            if (widget.isGeneratingVideo) ...[
+            if (widget.isGeneratingVideo) ...[  // ← 취소 버튼 포함
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -2512,6 +2619,26 @@ class _SceneCardState extends State<_SceneCard> {
                       style: GoogleFonts.notoSansKr(
                           color: AppTheme.textSecondary, fontSize: 10),
                     ),
+                    // ── 취소 버튼 ──
+                    if (widget.onCancelVideo != null) ...[  
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: widget.onCancelVideo,
+                          icon: const Icon(Icons.stop_circle_rounded,
+                              size: 14, color: Colors.red),
+                          label: Text('영상 생성 취소',
+                              style: GoogleFonts.notoSansKr(
+                                  fontSize: 11, color: Colors.red)),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Colors.red),
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            minimumSize: Size.zero,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -2560,11 +2687,27 @@ class _SceneCardState extends State<_SceneCard> {
                             backgroundColor: Colors.green.shade600,
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
+                                horizontal: 10, vertical: 6),
                             minimumSize: Size.zero,
                           ),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 6),
+                        // 재생성 버튼
+                        if (widget.onRegenerateVideo != null)
+                          ElevatedButton.icon(
+                            onPressed: widget.onRegenerateVideo,
+                            icon: const Icon(Icons.refresh_rounded, size: 14),
+                            label: Text('재생성',
+                                style: GoogleFonts.notoSansKr(fontSize: 11)),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange.shade600,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
+                              minimumSize: Size.zero,
+                            ),
+                          ),
+                        const SizedBox(width: 6),
                         // 저장 버튼
                         ElevatedButton.icon(
                           onPressed: () => _saveVideo(context),
@@ -2575,7 +2718,7 @@ class _SceneCardState extends State<_SceneCard> {
                             backgroundColor: AppTheme.accent,
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
+                                horizontal: 10, vertical: 6),
                             minimumSize: Size.zero,
                           ),
                         ),
