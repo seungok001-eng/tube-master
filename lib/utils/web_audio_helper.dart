@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -20,17 +21,13 @@ class WebAudioHelper {
 
   /// Windows/Desktop에서 오디오 바이트를 임시 파일로 재생
   static Future<void> playDesktop(Uint8List bytes, {String ext = 'mp3'}) async {
-    try {
-      final tmpDir = await getTemporaryDirectory();
-      final file = File('${tmpDir.path}/tts_preview_${DateTime.now().millisecondsSinceEpoch}.$ext');
-      await file.writeAsBytes(bytes);
-      final player = await _getDesktopPlayer();
-      await player.stop();
-      await player.setFilePath(file.path);
-      await player.play();
-    } catch (e) {
-      if (kDebugMode) debugPrint('[WebAudioHelper] Desktop play error: $e');
-    }
+    final tmpDir = await getTemporaryDirectory();
+    final file = File('${tmpDir.path}/tts_preview_${DateTime.now().millisecondsSinceEpoch}.$ext');
+    await file.writeAsBytes(bytes);
+    final player = await _getDesktopPlayer();
+    await player.stop();
+    await player.setFilePath(file.path);
+    await player.play();
   }
 
   /// Windows/Desktop에서 재생 중지
@@ -45,13 +42,13 @@ class WebAudioHelper {
     if (kIsWeb) {
       playAuto(bytes, sampleRate: sampleRate);
     } else {
-      // MP3 또는 WAV 판별
+      // MP3 또는 WAV 판별 후 재생
       if (isMp3(bytes)) {
         await playDesktop(bytes, ext: 'mp3');
       } else if (isWav(bytes)) {
         await playDesktop(bytes, ext: 'wav');
       } else {
-        // PCM → WAV 변환
+        // PCM → WAV 변환 후 재생 (Gemini TTS는 raw PCM 반환)
         final wav = pcmToWav(bytes, sampleRate: sampleRate);
         await playDesktop(wav, ext: 'wav');
       }
@@ -71,6 +68,48 @@ class WebAudioHelper {
   static bool get isDesktopPlaying =>
       _desktopPlayer?.playing == true;
 
+
+  /// Windows/Desktop에서 파일 저장 다이얼로그로 오디오 저장
+  static Future<String?> saveDesktopAudio(Uint8List bytes,
+      {String defaultName = 'tts_audio', int sampleRate = 24000}) async {
+    // 실제 파일로 변환
+    Uint8List saveBytes;
+    String ext;
+    if (isMp3(bytes)) {
+      saveBytes = bytes;
+      ext = 'mp3';
+    } else if (isWav(bytes)) {
+      saveBytes = bytes;
+      ext = 'wav';
+    } else {
+      // PCM → WAV 변환
+      saveBytes = pcmToWav(bytes, sampleRate: sampleRate);
+      ext = 'wav';
+    }
+
+    // FilePicker로 저장 경로 선택
+    try {
+      final result = await FilePicker.platform.saveFile(
+        dialogTitle: '오디오 파일 저장',
+        fileName: '$defaultName.$ext',
+        allowedExtensions: [ext],
+        type: FileType.custom,
+      );
+      if (result != null) {
+        final outFile = File(result);
+        await outFile.writeAsBytes(saveBytes);
+        return result;
+      }
+    } catch (_) {
+      // FilePicker 실패 시 Documents 폴더에 직접 저장
+      final docsDir = await getApplicationDocumentsDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final outFile = File('${docsDir.path}/${defaultName}_$timestamp.$ext');
+      await outFile.writeAsBytes(saveBytes);
+      return outFile.path;
+    }
+    return null;
+  }
 
   // ─── 오디오 재생 ─────────────────────────────────────────
 

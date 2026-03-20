@@ -4745,16 +4745,19 @@ class _AudioPlayerState extends State<_AudioPlayer>
 
       await WebAudioHelper.playAutoAsync(widget.audioBytes, sampleRate: 24000);
 
-      // 재생 시간 추정 후 상태 복원
+      // 재생 시간 추정: WAV 또는 PCM raw 기준
       int estimatedSecs = 5;
-      if (WebAudioHelper.isWav(widget.audioBytes)) {
-        final pcmBytes = widget.audioBytes.length > 44
-            ? widget.audioBytes.length - 44
-            : widget.audioBytes.length;
-        estimatedSecs = (pcmBytes ~/ (24000 * 1 * 2)).clamp(2, 300);
-      } else if (WebAudioHelper.isMp3(widget.audioBytes)) {
+      final bytes = widget.audioBytes;
+      if (WebAudioHelper.isWav(bytes)) {
+        // WAV 헤더(44바이트) 제외한 PCM 길이로 계산 (16bit mono 24kHz)
+        final pcmLen = bytes.length > 44 ? bytes.length - 44 : bytes.length;
+        estimatedSecs = (pcmLen ~/ (24000 * 1 * 2)).clamp(2, 300);
+      } else if (WebAudioHelper.isMp3(bytes)) {
         // MP3: 대략 128kbps 기준 추정
-        estimatedSecs = (widget.audioBytes.length ~/ 16000).clamp(2, 300);
+        estimatedSecs = (bytes.length ~/ 16000).clamp(2, 300);
+      } else {
+        // raw PCM (Gemini TTS): 16bit mono 24kHz
+        estimatedSecs = (bytes.length ~/ (24000 * 2)).clamp(2, 300);
       }
       Future.delayed(Duration(seconds: estimatedSecs), () {
         if (mounted) {
@@ -4783,12 +4786,12 @@ class _AudioPlayerState extends State<_AudioPlayer>
   }
 
 
-  /// WAV 파일 다운로드
+  /// 오디오 파일 저장 (Web: Blob 다운로드 / Desktop: FilePicker 저장)
   void _downloadAudio() async {
     try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
       if (kIsWeb) {
-        // 웹: JS Blob URL 다운로드 방식 (WAV 헤더 자동 적용)
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        // 웹: JS Blob URL 다운로드
         WebAudioHelper.downloadAuto(
           widget.audioBytes,
           fileName: 'tts_audio_$timestamp',
@@ -4796,14 +4799,17 @@ class _AudioPlayerState extends State<_AudioPlayer>
         );
         _showSnack('🎵 오디오 파일 다운로드 시작!');
       } else {
-        final b64 = base64Encode(widget.audioBytes);
-        final dataUrl = 'data:audio/wav;base64,$b64';
-        final uri = Uri.parse(dataUrl);
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri);
-          _showSnack('WAV 파일 다운로드 시작!');
+        // Windows/Desktop: FilePicker로 저장 경로 선택 후 파일 저장
+        final savedPath = await WebAudioHelper.saveDesktopAudio(
+          widget.audioBytes,
+          defaultName: 'tts_audio_$timestamp',
+          sampleRate: 24000,
+        );
+        if (savedPath != null) {
+          _showSnack('💾 저장 완료: $savedPath');
         } else {
-          _showSnack('다운로드를 시작할 수 없습니다.');
+          // 사용자가 취소한 경우
+          _showSnack('저장이 취소되었습니다.');
         }
       }
     } catch (e) {
