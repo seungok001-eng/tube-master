@@ -2944,6 +2944,31 @@ class _TtsTabState extends State<_TtsTab>
   String _clovaFilterGender = '전체';
   String _clovaFilterLang = '전체';     // 전체, 한국어, 영어, 일본어, 대만어, 스페인어
 
+  // ── ElevenLabs 목소리 ──
+  // 내장 대표 목소리 (API 키 없어도 표시, 공개 Voice ID)
+  static const _elevenLabsBuiltinVoices = [
+    {'id': '21m00Tcm4TlvDq8ikWAM', 'name': 'Rachel',   'gender': '여성', 'age': '성인', 'desc': '차분하고 명확한 영어 여성 - 기본값', 'lang': '영어'},
+    {'id': 'AZnzlk1XvdvUeBnXmlld', 'name': 'Domi',     'gender': '여성', 'age': '청년', 'desc': '강하고 자신감 있는 여성', 'lang': '영어'},
+    {'id': 'EXAVITQu4vr4xnSDxMaL', 'name': 'Bella',    'gender': '여성', 'age': '청년', 'desc': '부드럽고 감성적인 여성', 'lang': '영어'},
+    {'id': 'ErXwobaYiN019PkySvjV', 'name': 'Antoni',   'gender': '남성', 'age': '성인', 'desc': '부드럽고 전문적인 남성', 'lang': '영어'},
+    {'id': 'MF3mGyEYCl7XYWbV9V6O', 'name': 'Elli',     'gender': '여성', 'age': '청년', 'desc': '감정적이고 젊은 여성', 'lang': '영어'},
+    {'id': 'TxGEqnHWrfWFTfGW9XjX', 'name': 'Josh',     'gender': '남성', 'age': '청년', 'desc': '딥하고 감성적인 남성', 'lang': '영어'},
+    {'id': 'VR6AewLTigWG4xSOukaG', 'name': 'Arnold',   'gender': '남성', 'age': '성인', 'desc': '강하고 중후한 나레이터 남성', 'lang': '영어'},
+    {'id': 'pNInz6obpgDQGcFmaJgB', 'name': 'Adam',     'gender': '남성', 'age': '성인', 'desc': '딥하고 내레이션에 적합한 남성', 'lang': '영어'},
+    {'id': 'yoZ06aMxZJJ28mfd3POQ', 'name': 'Sam',      'gender': '남성', 'age': '청년', 'desc': '이성적이고 활기찬 남성', 'lang': '영어'},
+    {'id': 'jBpfuIE2acCO8z3wKNLl', 'name': 'Gigi',     'gender': '여성', 'age': '청년', 'desc': '경쾌하고 발랄한 여성', 'lang': '영어'},
+    {'id': 'onwK4e9ZLuTAKqWW03F9', 'name': 'Daniel',   'gender': '남성', 'age': '성인', 'desc': '영국 영어 · 뉴스 앵커 스타일', 'lang': '영어'},
+    {'id': 'XB0fDUnXU5powFXDhCwa', 'name': 'Charlotte', 'gender': '여성', 'age': '성인', 'desc': '영국 영어 · 우아하고 세련된', 'lang': '영어'},
+  ];
+
+  // API에서 불러온 목소리 (내 계정의 커스텀 목소리 포함)
+  List<Map<String, String>> _elevenLabsApiVoices = [];
+  bool _elevenLabsVoicesLoading = false;
+  bool _elevenLabsVoicesLoaded = false;
+  String _elevenLabsFilterGender = '전체';  // 전체, 여성, 남성
+  // 현재 재생 중인 샘플 Voice ID
+  String _elevenLabsPlayingId = '';
+
   // ─── Gemini TTS 전체 30개 목소리 ───
   // {id: {gender, age, personality, langs, desc_ko}}
   static const _geminiVoices = [
@@ -3748,27 +3773,328 @@ class _TtsTabState extends State<_TtsTab>
   }
 
   Widget _buildElevenLabsSettings() {
+    // 표시할 목소리 목록: API 불러온 것 + 내장 기본 목소리 병합
+    final allVoices = <Map<String, String>>[];
+    // API 목소리 먼저 (내 계정 커스텀 포함)
+    allVoices.addAll(_elevenLabsApiVoices);
+    // 내장 목소리 중 API에 없는 것만 추가
+    for (final v in _elevenLabsBuiltinVoices) {
+      if (!allVoices.any((a) => a['id'] == v['id'])) {
+        allVoices.add(Map<String, String>.from(v));
+      }
+    }
+
+    // 성별 필터
+    final filtered = allVoices.where((v) {
+      if (_elevenLabsFilterGender == '전체') return true;
+      return v['gender'] == _elevenLabsFilterGender;
+    }).toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('🎤 ElevenLabs 음성 ID'),
+        // ── 헤더 ──
+        Row(children: [
+          _sectionTitle('🎤 ElevenLabs 음성 (${filtered.length})'),
+          const Spacer(),
+          if (_isSampling) ...[
+            const SizedBox(
+              width: 14, height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accent),
+            ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () {
+                WebAudioHelper.stopAll();
+                setState(() { _isSampling = false; _elevenLabsPlayingId = ''; });
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
+                ),
+                child: Text('■ 정지',
+                    style: GoogleFonts.notoSansKr(color: Colors.red, fontSize: 11, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ],
+        ]),
         const SizedBox(height: 8),
-        TextField(
-          onChanged: (v) => _elevenLabsVoiceId = v,
-          style: GoogleFonts.notoSansKr(fontSize: 13),
-          decoration: InputDecoration(
-            hintText: 'Voice ID를 입력하세요',
-            hintStyle: GoogleFonts.notoSansKr(
-                color: AppTheme.textHint, fontSize: 12),
+
+        // ── 필터 행 ──
+        Row(children: [
+          // 성별 필터
+          ...['전체', '여성', '남성'].map((g) => Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: GestureDetector(
+              onTap: () => setState(() => _elevenLabsFilterGender = g),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: _elevenLabsFilterGender == g
+                      ? AppTheme.accent.withValues(alpha: 0.15)
+                      : AppTheme.bgSurface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _elevenLabsFilterGender == g
+                        ? AppTheme.accent
+                        : AppTheme.border,
+                  ),
+                ),
+                child: Text(g,
+                    style: GoogleFonts.notoSansKr(
+                        fontSize: 11,
+                        color: _elevenLabsFilterGender == g ? AppTheme.accent : AppTheme.textSecondary,
+                        fontWeight: _elevenLabsFilterGender == g ? FontWeight.w600 : FontWeight.normal)),
+              ),
+            ),
+          )),
+          const Spacer(),
+          // API 불러오기 버튼
+          GestureDetector(
+            onTap: _loadElevenLabsVoices,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: AppTheme.bgSurface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: _elevenLabsVoicesLoading
+                  ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Text(_elevenLabsVoicesLoaded ? '🔄 새로고침' : '📋 내 목소리 불러오기',
+                      style: GoogleFonts.notoSansKr(fontSize: 11, color: AppTheme.textSecondary)),
+            ),
           ),
-        ),
+        ]),
+        const SizedBox(height: 10),
+
+        // ── 목소리 카드 목록 ──
+        ...filtered.map((voice) {
+          final vid = voice['id'] ?? '';
+          final vname = voice['name'] ?? '';
+          final vgender = voice['gender'] ?? '';
+          final vdesc = voice['desc'] ?? voice['description'] ?? '';
+          final vlang = voice['lang'] ?? voice['labels'] ?? '';
+          final isSelected = _elevenLabsVoiceId == vid;
+          final isPlaying = _elevenLabsPlayingId == vid && _isSampling;
+
+          return GestureDetector(
+            onTap: () => setState(() => _elevenLabsVoiceId = vid),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? AppTheme.accent.withValues(alpha: 0.08)
+                    : AppTheme.bgSurface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isSelected ? AppTheme.accent : AppTheme.border,
+                  width: isSelected ? 1.5 : 1.0,
+                ),
+              ),
+              child: Row(children: [
+                // 선택 라디오
+                Container(
+                  width: 16, height: 16,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: isSelected ? AppTheme.accent : AppTheme.border,
+                      width: isSelected ? 5.0 : 1.5,
+                    ),
+                    color: isSelected ? AppTheme.accent : Colors.transparent,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                // 정보
+                Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Text(vname,
+                          style: GoogleFonts.notoSansKr(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isSelected ? AppTheme.accent : AppTheme.textPrimary)),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: vgender == '여성'
+                              ? Colors.pink.withValues(alpha: 0.15)
+                              : Colors.blue.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(vgender.isNotEmpty ? vgender : '?',
+                            style: GoogleFonts.notoSansKr(
+                                fontSize: 10,
+                                color: vgender == '여성' ? Colors.pink : Colors.blue)),
+                      ),
+                      if (vlang.isNotEmpty) ...[
+                        const SizedBox(width: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: AppTheme.bgSurface,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: AppTheme.border),
+                          ),
+                          child: Text(vlang,
+                              style: GoogleFonts.notoSansKr(
+                                  fontSize: 10, color: AppTheme.textSecondary)),
+                        ),
+                      ],
+                    ]),
+                    if (vdesc.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(vdesc,
+                            style: GoogleFonts.notoSansKr(
+                                fontSize: 11, color: AppTheme.textSecondary)),
+                      ),
+                  ],
+                )),
+                // 미리듣기 버튼
+                GestureDetector(
+                  onTap: () => _previewElevenLabsVoice(vid, vname),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: isPlaying
+                          ? AppTheme.accent.withValues(alpha: 0.15)
+                          : AppTheme.bgDark,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isPlaying ? AppTheme.accent : AppTheme.border,
+                      ),
+                    ),
+                    child: isPlaying
+                        ? Row(mainAxisSize: MainAxisSize.min, children: [
+                            const SizedBox(
+                              width: 12, height: 12,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accent),
+                            ),
+                            const SizedBox(width: 4),
+                            Text('재생 중',
+                                style: GoogleFonts.notoSansKr(
+                                    fontSize: 11, color: AppTheme.accent, fontWeight: FontWeight.w600)),
+                          ])
+                        : Row(mainAxisSize: MainAxisSize.min, children: [
+                            const Icon(Icons.play_arrow, size: 14, color: AppTheme.textSecondary),
+                            const SizedBox(width: 3),
+                            Text('미리듣기',
+                                style: GoogleFonts.notoSansKr(
+                                    fontSize: 11, color: AppTheme.textSecondary)),
+                          ]),
+                  ),
+                ),
+              ]),
+            ),
+          );
+        }),
+
         const SizedBox(height: 8),
-        Text('ElevenLabs에서 원하는 음성의 Voice ID를 복사해 입력하세요',
-            style: GoogleFonts.notoSansKr(
-                color: AppTheme.textHint, fontSize: 11)),
+        // 직접 입력 필드 (고급 사용자용)
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: Text('🔧 Voice ID 직접 입력 (고급)',
+              style: GoogleFonts.notoSansKr(fontSize: 12, color: AppTheme.textSecondary)),
+          children: [
+            TextField(
+              controller: TextEditingController(text: _elevenLabsVoiceId),
+              onChanged: (v) => setState(() => _elevenLabsVoiceId = v),
+              style: GoogleFonts.notoSansKr(fontSize: 13),
+              decoration: InputDecoration(
+                hintText: 'ElevenLabs Voice ID',
+                hintStyle: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 12),
+                suffixText: _elevenLabsVoiceId.isNotEmpty ? '✓' : '',
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text('ElevenLabs Voice Library에서 원하는 Voice ID를 복사해 입력하세요.',
+                style: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 11)),
+          ],
+        ),
         const SizedBox(height: 12),
       ],
     );
+  }
+
+  /// ElevenLabs API에서 목소리 목록 불러오기
+  Future<void> _loadElevenLabsVoices() async {
+    final apiKey = widget.provider.apiKeys.elevenLabsApiKey;
+    if (apiKey.isEmpty) {
+      _showSnack('설정에서 ElevenLabs API 키를 먼저 입력해주세요.');
+      return;
+    }
+    setState(() => _elevenLabsVoicesLoading = true);
+    try {
+      final voices = await ElevenLabsService(apiKey).getVoices();
+      setState(() {
+        _elevenLabsApiVoices = voices;
+        _elevenLabsVoicesLoaded = true;
+        _elevenLabsVoicesLoading = false;
+      });
+      _showSnack('✅ 내 목소리 ${voices.length}개를 불러왔습니다.');
+    } catch (e) {
+      setState(() => _elevenLabsVoicesLoading = false);
+      _showSnack('불러오기 실패: ${e.toString().replaceAll('Exception: ', '')}');
+    }
+  }
+
+  /// ElevenLabs 목소리 미리듣기 (캐시 포함)
+  Future<void> _previewElevenLabsVoice(String voiceId, String voiceName) async {
+    final apiKey = widget.provider.apiKeys.elevenLabsApiKey;
+    if (apiKey.isEmpty) {
+      _showSnack('설정에서 ElevenLabs API 키를 먼저 입력해주세요.');
+      return;
+    }
+
+    // 이미 재생 중이면 정지
+    if (_elevenLabsPlayingId == voiceId && _isSampling) {
+      WebAudioHelper.stopAll();
+      setState(() { _isSampling = false; _elevenLabsPlayingId = ''; });
+      return;
+    }
+
+    // 캐시 확인
+    final cacheKey = 'elevenlabs_$voiceId';
+    if (_sampleCache.containsKey(cacheKey)) {
+      setState(() { _isSampling = true; _elevenLabsPlayingId = voiceId; });
+      try {
+        await WebAudioHelper.playAutoAsync(_sampleCache[cacheKey]!);
+        _showSnack('🔊 $voiceName 재생 중...');
+        Future.delayed(const Duration(seconds: 6), () {
+          if (mounted && _elevenLabsPlayingId == voiceId) {
+            setState(() { _isSampling = false; _elevenLabsPlayingId = ''; });
+          }
+        });
+      } catch (e) {
+        setState(() { _isSampling = false; _elevenLabsPlayingId = ''; });
+        _showSnack('재생 실패: $e');
+      }
+      return;
+    }
+
+    setState(() { _isSampling = true; _elevenLabsPlayingId = voiceId; });
+    try {
+      final bytes = await ElevenLabsService(apiKey).previewVoice(voiceId: voiceId);
+      _sampleCache[cacheKey] = bytes;
+      await WebAudioHelper.playAutoAsync(bytes);
+      _showSnack('🔊 $voiceName 재생 중...');
+      Future.delayed(const Duration(seconds: 6), () {
+        if (mounted && _elevenLabsPlayingId == voiceId) {
+          setState(() { _isSampling = false; _elevenLabsPlayingId = ''; });
+        }
+      });
+    } catch (e) {
+      setState(() { _isSampling = false; _elevenLabsPlayingId = ''; });
+      _showSnack('미리듣기 실패: ${e.toString().replaceAll('Exception: ', '')}');
+    }
   }
 
   Future<void> _previewClovaVoice(String speakerId, String speakerName, String lang) async {
@@ -4786,21 +5112,22 @@ class _AudioPlayerState extends State<_AudioPlayer>
 
       await WebAudioHelper.playAutoAsync(widget.audioBytes, sampleRate: 24000);
 
-      // 재생 시간 추정: WAV 또는 PCM raw 기준
-      int estimatedSecs = 5;
+      // 재생 시간 추정
+      int estimatedSecs;
       final bytes = widget.audioBytes;
       if (WebAudioHelper.isWav(bytes)) {
         // WAV 헤더(44바이트) 제외한 PCM 길이로 계산 (16bit mono 24kHz)
         final pcmLen = bytes.length > 44 ? bytes.length - 44 : bytes.length;
-        estimatedSecs = (pcmLen ~/ (24000 * 1 * 2)).clamp(2, 300);
+        estimatedSecs = (pcmLen ~/ (24000 * 1 * 2)).clamp(2, 600);
       } else if (WebAudioHelper.isMp3(bytes)) {
-        // MP3: 대략 128kbps 기준 추정
-        estimatedSecs = (bytes.length ~/ 16000).clamp(2, 300);
+        // MP3: 128kbps 기준 추정 (16000 bytes/sec)
+        // ElevenLabs 반환 MP3도 포함
+        estimatedSecs = (bytes.length ~/ 16000).clamp(3, 600);
       } else {
         // raw PCM (Gemini TTS): 16bit mono 24kHz
-        estimatedSecs = (bytes.length ~/ (24000 * 2)).clamp(2, 300);
+        estimatedSecs = (bytes.length ~/ (24000 * 2)).clamp(2, 600);
       }
-      Future.delayed(Duration(seconds: estimatedSecs), () {
+      Future.delayed(Duration(seconds: estimatedSecs + 1), () {
         if (mounted) {
           setState(() => _playing = false);
           _waveCtrl.stop();

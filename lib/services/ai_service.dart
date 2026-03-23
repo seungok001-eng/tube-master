@@ -625,7 +625,7 @@ class ElevenLabsService {
     }
   }
 
-  /// 사용 가능한 목소리 목록 조회
+  /// 사용 가능한 목소리 목록 조회 (API 키 필요)
   Future<List<Map<String, String>>> getVoices() async {
     final response = await http.get(
       Uri.parse('$_baseUrl/voices'),
@@ -639,9 +639,26 @@ class ElevenLabsService {
         'id': v['voice_id']?.toString() ?? '',
         'name': v['name']?.toString() ?? '',
         'category': v['category']?.toString() ?? '',
+        'description': v['description']?.toString() ?? '',
+        'preview_url': v['preview_url']?.toString() ?? '',
+        'labels': (v['labels'] as Map?)?.values.join(', ') ?? '',
       }).toList();
     }
     return [];
+  }
+
+  /// 목소리 미리듣기 - 샘플 텍스트로 TTS 생성
+  Future<Uint8List> previewVoice({
+    required String voiceId,
+    String lang = 'ko',
+  }) async {
+    const sampleTexts = {
+      'ko': '안녕하세요. 저는 이 목소리로 콘텐츠를 만들어 드립니다.',
+      'en': 'Hello! I can help you create amazing content with this voice.',
+      'ja': 'こんにちは。このボイスでコンテンツを作成します。',
+    };
+    final text = sampleTexts[lang] ?? sampleTexts['ko']!;
+    return generateTts(text: text, voiceId: voiceId);
   }
 }
 
