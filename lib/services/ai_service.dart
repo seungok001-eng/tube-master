@@ -1578,7 +1578,7 @@ class LocalVideoService {
           final running = (queueData2['queue_running'] as List?) ?? [];
           final pending = (queueData2['queue_pending'] as List?) ?? [];
           if (running.isNotEmpty) {
-            onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 900).clamp(0.0, 0.7));
+            onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 1800).clamp(0.0, 0.72));
           } else if (pending.isNotEmpty) {
             onProgress?.call('큐 대기 중 (${pending.length}개 앞에 있음, 경과: $elapsedStr)', 0.12);
           }
@@ -1594,7 +1594,7 @@ class LocalVideoService {
       final hist = jsonDecode(histResp.body) as Map<String, dynamic>;
       if (!hist.containsKey(promptId)) {
         // 아직 history에 없으면 실행 중
-        onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 900).clamp(0.0, 0.7));
+        onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 1800).clamp(0.0, 0.72));
         continue;
       }
 
@@ -1621,15 +1621,27 @@ class LocalVideoService {
       }
 
       final outputs = promptResult['outputs'] as Map<String, dynamic>?;
+
+      // status_str 확인 - success면 완료된 것
+      final statusStr2 = (promptResult['status'] as Map<String, dynamic>?)?['status_str'] as String? ?? '';
+
       if (outputs == null || outputs.isEmpty) {
+        if (statusStr2 == 'success') {
+          // 성공으로 표시되었지만 outputs가 비어있음 - 예외 처리
+          throw Exception('ComfyUI 생성 완료되었으나 출력 파일이 없습니다.\nComfyUI에서 직접 결과를 확인해주세요.');
+        }
         // 아직 실행 중
-        onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 900).clamp(0.0, 0.7));
+        onProgress?.call('생성 중... (경과: $elapsedStr)', 0.15 + (elapsed.inSeconds / 1800).clamp(0.0, 0.72));
         continue;
       }
 
       // 출력에서 webp/mp4/gif 파일 찾기
       // SaveAnimatedWEBP → 'images' 키, VHS_VideoCombine → 'gifs'/'videos' 키
+      Map<String, dynamic>? foundFile;
+      String? foundSubfolder;
+
       for (final nodeOut in outputs.values) {
+        if (foundFile != null) break;
         final node = nodeOut as Map<String, dynamic>;
         // 모든 가능한 키 순서대로 확인
         final fileList = node['images'] as List?
@@ -1646,20 +1658,64 @@ class LocalVideoService {
             }
           }
           bestFile ??= fileList[0] as Map<String, dynamic>;
-
-          final filename = bestFile['filename'] as String?;
-          final subfolder = bestFile['subfolder'] as String? ?? '';
-          if (filename != null && filename.isNotEmpty) {
-            final dlUrl = '$comfyUrl/view?filename=$filename&subfolder=$subfolder&type=output';
-            onProgress?.call('영상 다운로드 중...', 0.9);
-            final dlResp = await http.get(Uri.parse(dlUrl))
-                .timeout(const Duration(minutes: 5));
-            if (dlResp.statusCode == 200) {
-              onProgress?.call('완료!', 1.0);
-              return dlResp.bodyBytes;
-            }
+          final fn = bestFile['filename'] as String?;
+          if (fn != null && fn.isNotEmpty) {
+            foundFile = bestFile;
+            foundSubfolder = bestFile['subfolder'] as String? ?? '';
           }
         }
+      }
+
+      if (foundFile != null) {
+          final filename = foundFile['filename'] as String?;
+          final subfolder = foundSubfolder ?? '';
+          if (filename != null && filename.isNotEmpty) {
+            final dlUrl = '$comfyUrl/view?filename=$filename&subfolder=$subfolder&type=output';
+            onProgress?.call('영상 다운로드 중... (파일: $filename)', 0.88);
+
+            // 스트리밍 다운로드 - 파일 크기를 모를 때도 진행 표시
+            final request = http.Request('GET', Uri.parse(dlUrl));
+            final streamedResp = await request.send()
+                .timeout(const Duration(minutes: 15));
+
+            if (streamedResp.statusCode == 200) {
+              final totalBytes = streamedResp.contentLength ?? 0;
+              final chunks = <int>[];
+              int received = 0;
+
+              await for (final chunk in streamedResp.stream) {
+                chunks.addAll(chunk);
+                received += chunk.length;
+                if (totalBytes > 0) {
+                  final dlPct = received / totalBytes;
+                  final dlMb = (received / 1024 / 1024).toStringAsFixed(1);
+                  final totalMb = (totalBytes / 1024 / 1024).toStringAsFixed(1);
+                  onProgress?.call(
+                    '영상 다운로드 중... $dlMb/$totalMb MB',
+                    0.88 + dlPct * 0.11,
+                  );
+                } else {
+                  // 파일 크기 모를 때: 받은 크기만 표시
+                  final dlMb = (received / 1024 / 1024).toStringAsFixed(1);
+                  onProgress?.call('영상 다운로드 중... $dlMb MB 수신', 0.92);
+                }
+              }
+
+              onProgress?.call('완료!', 1.0);
+              return Uint8List.fromList(chunks);
+            } else {
+              throw Exception('영상 다운로드 실패 (${streamedResp.statusCode}): $filename');
+            }
+          }
+      } else if (statusStr2 == 'success') {
+        // 성공으로 마킹됐지만 파일 형식을 찾지 못한 경우
+        // outputs 키 목록 기반 오류 메시지
+        final keyList = outputs.values
+            .map((n) => (n as Map).keys.toList().toString())
+            .join(', ');
+        throw Exception('ComfyUI 생성 완료 - 파일을 찾을 수 없음\n'
+            '출력 키: $keyList\n'
+            'SaveAnimatedWEBP 노드가 정상 설치되었는지 확인해주세요.');
       }
 
       if (interval < 10) interval = (interval * 1.2).round().clamp(3, 10);
