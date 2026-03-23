@@ -212,7 +212,10 @@ class _ImageGenerationTab extends StatefulWidget {
   State<_ImageGenerationTab> createState() => _ImageGenerationTabState();
 }
 
-class _ImageGenerationTabState extends State<_ImageGenerationTab> {
+class _ImageGenerationTabState extends State<_ImageGenerationTab>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true; // 탭 전환 시에도 State 유지 (생성 작업 중단 방지)
   bool _isGenerating = false;
   bool _isCancelled = false;   // 전체 생성 취소 플래그
   bool _isVideoGenerating = false; // 단독 영상 생성 중 여부
@@ -803,6 +806,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin 필수 호출
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2913,7 +2917,10 @@ class _TtsTab extends StatefulWidget {
   State<_TtsTab> createState() => _TtsTabState();
 }
 
-class _TtsTabState extends State<_TtsTab> {
+class _TtsTabState extends State<_TtsTab>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true; // 탭 전환 시에도 State 유지 (TTS 생성 중단 방지)
   TtsEngine _engine = TtsEngine.gemini;
   double _speed = 1.0;
   double _pitch = 1.0;
@@ -3301,6 +3308,7 @@ class _TtsTabState extends State<_TtsTab> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin 필수 호출
     return Row(
       children: [
         // 왼쪽: TTS 설정
