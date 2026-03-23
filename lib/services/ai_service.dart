@@ -1486,18 +1486,17 @@ class LocalVideoService {
             'vae': ['5', 0],
           },
         },
-        // 노드 13: 비디오 합치기
+        // 노드 13: 프레임 저장 (ComfyUI 내장 노드 - 별도 설치 불필요)
+        // SaveAnimatedWEBP: ComfyUI 기본 내장, WEBP 애니메이션으로 저장
         '13': {
-          'class_type': 'VHS_VideoCombine',
+          'class_type': 'SaveAnimatedWEBP',
           'inputs': {
             'images': ['12', 0],
-            'frame_rate': 16,
-            'loop_count': 0,
             'filename_prefix': 'wan_output',
-            'format': 'video/mp4',
-            'save_output': true,
-            'pingpong': false,
-            'save_metadata': false,
+            'fps': 16.0,
+            'lossless': false,
+            'quality': 85,
+            'method': 'default',
           },
         },
       }
@@ -1628,19 +1627,20 @@ class LocalVideoService {
         continue;
       }
 
-      // 출력에서 mp4/webp/gif 파일 찾기
+      // 출력에서 webp/mp4/gif 파일 찾기
+      // SaveAnimatedWEBP → 'images' 키, VHS_VideoCombine → 'gifs'/'videos' 키
       for (final nodeOut in outputs.values) {
         final node = nodeOut as Map<String, dynamic>;
-        // gifs, videos, images 키 모두 확인 (webp 포함)
-        final fileList = node['gifs'] as List?
-            ?? node['videos'] as List?
-            ?? node['images'] as List?;
+        // 모든 가능한 키 순서대로 확인
+        final fileList = node['images'] as List?
+            ?? node['gifs'] as List?
+            ?? node['videos'] as List?;
         if (fileList != null && fileList.isNotEmpty) {
-          // mp4/webp/gif 우선순위로 찾기
+          // webp/mp4/gif 우선순위로 찾기
           Map<String, dynamic>? bestFile;
           for (final f in fileList) {
             final fn = (f as Map<String, dynamic>)['filename'] as String? ?? '';
-            if (fn.endsWith('.mp4') || fn.endsWith('.webp') || fn.endsWith('.gif')) {
+            if (fn.endsWith('.webp') || fn.endsWith('.mp4') || fn.endsWith('.gif')) {
               bestFile = f;
               break;
             }
@@ -1649,13 +1649,13 @@ class LocalVideoService {
 
           final filename = bestFile['filename'] as String?;
           final subfolder = bestFile['subfolder'] as String? ?? '';
-          if (filename != null) {
+          if (filename != null && filename.isNotEmpty) {
             final dlUrl = '$comfyUrl/view?filename=$filename&subfolder=$subfolder&type=output';
-            onProgress?.call('downloading', 0.9);
+            onProgress?.call('영상 다운로드 중...', 0.9);
             final dlResp = await http.get(Uri.parse(dlUrl))
                 .timeout(const Duration(minutes: 5));
             if (dlResp.statusCode == 200) {
-              onProgress?.call('done', 1.0);
+              onProgress?.call('완료!', 1.0);
               return dlResp.bodyBytes;
             }
           }

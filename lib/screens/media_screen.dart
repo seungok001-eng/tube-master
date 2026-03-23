@@ -435,7 +435,11 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
             _videoSceneProgress = 0.0;
             _videoSceneProgressText = '';
           });
-          scene.videoPath = 'aivideo_${scene.id}.mp4';
+          // WEBP/MP4 자동 감지하여 확장자 설정
+          final isWebp = videoBytes.length > 4 &&
+              videoBytes[0] == 0x52 && videoBytes[1] == 0x49 &&
+              videoBytes[2] == 0x46 && videoBytes[3] == 0x46;
+          scene.videoPath = 'aivideo_${scene.id}.${isWebp ? 'webp' : 'mp4'}';
           videoSuccess++;
           if (mounted) {
             setState(() {
@@ -719,7 +723,11 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab> {
 
       if (!_isVideoCancelled) {
         scene.videoBytes = videoBytes;
-        scene.videoPath = 'aivideo_${scene.id}.mp4';
+        // WEBP/MP4 자동 감지
+        final isWebp = videoBytes.length > 4 &&
+            videoBytes[0] == 0x52 && videoBytes[1] == 0x49 &&
+            videoBytes[2] == 0x46 && videoBytes[3] == 0x46;
+        scene.videoPath = 'aivideo_${scene.id}.${isWebp ? 'webp' : 'mp4'}';
         setState(() => _statusMsg = '✅ 장면 ${index + 1} 영상 재생성 완료!');
         widget.provider.updateProject(widget.project);
       }
@@ -2368,8 +2376,12 @@ class _SceneCardState extends State<_SceneCard> {
     final bytes = widget.scene.videoBytes;
     if (bytes == null) return;
     try {
-      // 파일 저장 다이얼로그
-      final fileName = 'scene_${widget.index + 1}_video.mp4';
+      // WEBP/MP4 자동 감지
+      final isWebp = bytes.length > 4 &&
+          bytes[0] == 0x52 && bytes[1] == 0x49 &&
+          bytes[2] == 0x46 && bytes[3] == 0x46; // RIFF 헤더 = WEBP
+      final ext = isWebp ? 'webp' : 'mp4';
+      final fileName = 'scene_${widget.index + 1}_video.$ext';
       final result = await FilePicker.platform.saveFile(
         dialogTitle: '영상 저장',
         fileName: fileName,
@@ -2401,7 +2413,12 @@ class _SceneCardState extends State<_SceneCard> {
     if (bytes == null) return;
     try {
       final tmpDir = await getTemporaryDirectory();
-      final file = File('${tmpDir.path}/scene_${widget.index + 1}_preview.mp4');
+      // WEBP/MP4 자동 감지 (RIFF 헤더 = WEBP 애니메이션)
+      final isWebp = bytes.length > 4 &&
+          bytes[0] == 0x52 && bytes[1] == 0x49 &&
+          bytes[2] == 0x46 && bytes[3] == 0x46;
+      final ext = isWebp ? 'webp' : 'mp4';
+      final file = File('${tmpDir.path}/scene_${widget.index + 1}_preview.$ext');
       await file.writeAsBytes(bytes);
       final uri = Uri.file(file.path);
       if (await canLaunchUrl(uri)) {
