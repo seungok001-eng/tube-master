@@ -14,6 +14,22 @@ import '../theme/app_theme.dart';
 import '../services/ai_service.dart';
 import '../utils/web_audio_helper.dart';
 
+import 'dart:typed_data';
+
+// ── ZIP 인코딩 백그라운드 함수 (compute() 용 top-level) ──
+// UI 스레드 블로킹 방지: 이미지/오디오 포함 대용량 ZIP을 isolate에서 처리
+Uint8List _encodeZipIsolate(List<dynamic> files) {
+  // files: [['경로', bytes], ...]
+  final archive = Archive();
+  for (final item in files) {
+    final path = item[0] as String;
+    final data = item[1] as List<int>;
+    archive.addFile(ArchiveFile(path, data.length, data));
+  }
+  final encoded = ZipEncoder().encode(archive);
+  return Uint8List.fromList(encoded);
+}
+
 // ─────────────────────────────────────
 // 렌더링 & 유튜브 업로드 화면
 // ─────────────────────────────────────
@@ -532,29 +548,30 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       // README
       final readme = _buildReadme(safe, scenes.length, hasImages, hasTts, ffmpegCmd, sceneDuration);
 
-      // ── 4단계: ZIP 아카이브 생성 ──
+      // ── 4단계: ZIP 아카이브용 파일 목록 조립 ──
       await Future.delayed(const Duration(milliseconds: 200));
-      setState(() { _renderProgress = 0.4; _renderLog += '[${_timestamp()}] ZIP 아카이브 생성 중...\n'; });
+      setState(() { _renderProgress = 0.4; _renderLog += '[${_timestamp()}] 파일 목록 준비 중...\n'; });
 
-      final archive = Archive();
+      // compute()에 전달할 파일 목록: [['경로', bytes], ...]
+      final fileList = <List<dynamic>>[];
 
       // README
       final readmeBytes = utf8.encode(readme);
-      archive.addFile(ArchiveFile('README.txt', readmeBytes.length, readmeBytes));
+      fileList.add(['README.txt', readmeBytes]);
 
       // 자막
       final srtBytes = utf8.encode(srtBuffer.toString());
-      archive.addFile(ArchiveFile('subtitles.srt', srtBytes.length, srtBytes));
+      fileList.add(['subtitles.srt', srtBytes]);
 
       // scenes.txt
       final scenesTxtBytes = utf8.encode(scenesBuffer.toString());
-      archive.addFile(ArchiveFile('scenes.txt', scenesTxtBytes.length, scenesTxtBytes));
+      fileList.add(['scenes.txt', scenesTxtBytes]);
 
       // FFmpeg 스크립트들
       final batBytes = utf8.encode(batScript);
-      archive.addFile(ArchiveFile('render.bat', batBytes.length, batBytes));
+      fileList.add(['render.bat', batBytes]);
       final shBytes = utf8.encode(shScript);
-      archive.addFile(ArchiveFile('render.sh', shBytes.length, shBytes));
+      fileList.add(['render.sh', shBytes]);
 
       // ── 5단계: 이미지 파일들 추가 ──
       int imageCount = 0;
@@ -562,8 +579,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         final scene = scenes[i];
         if (scene.imageBytes != null) {
           final imgBytes = scene.imageBytes!;
-          archive.addFile(ArchiveFile(
-              'scenes/scene_${i + 1}.jpg', imgBytes.length, imgBytes));
+          fileList.add(['scenes/scene_${i + 1}.jpg', imgBytes]);
           imageCount++;
         }
         // 진행률 업데이트
@@ -587,18 +603,16 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         final audioBytes = WebAudioHelper.isWav(ttsBytes)
             ? ttsBytes
             : WebAudioHelper.pcmToWav(ttsBytes, sampleRate: 24000);
-        archive.addFile(ArchiveFile(
-            '${safe}_tts.wav', audioBytes.length, audioBytes));
+        fileList.add(['${safe}_tts.wav', audioBytes]);
       }
 
-      // ── 7단계: ZIP 인코딩 ──
+      // ── 7단계: ZIP 인코딩 (백그라운드 isolate) ──
       await Future.delayed(const Duration(milliseconds: 200));
-      setState(() { _renderProgress = 0.9; _renderLog += '[${_timestamp()}] ZIP 압축 중...\n'; });
+      setState(() { _renderProgress = 0.9; _renderLog += '[${_timestamp()}] ZIP 압축 중... (백그라운드 처리)\n'; });
 
-      final zipBytesRaw = ZipEncoder().encode(archive);
-      // ignore: dead_code
-      final zipBytes = Uint8List.fromList(zipBytesRaw ?? []);
-      if (zipBytesRaw == null || zipBytesRaw.isEmpty) throw Exception('ZIP 인코딩 실패');
+      // compute()로 isolate에서 ZIP 인코딩 → UI 스레드 블로킹 없음
+      final zipBytes = await compute(_encodeZipIsolate, fileList);
+      if (zipBytes.isEmpty) throw Exception('ZIP 인코딩 실패');
 
       // ── 8단계: ZIP 즉시 다운로드 ──
       setState(() { _renderProgress = 1.0; _renderLog += '[${_timestamp()}] ✅ ZIP 다운로드 시작!\n'; });
