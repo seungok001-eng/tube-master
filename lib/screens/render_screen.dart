@@ -296,13 +296,69 @@ class _RenderingTabState extends State<_RenderingTab> {
     return filters.toString();
   }
 
+  // 장면별 TTS가 있는지 확인
+  bool get _hasPerSceneTts => widget.project.scenes.any((s) => s.sceneTtsBytes != null);
+
   // Mac/Linux용 쉘 스크립트 ffmpeg 명령어 (줄바꿈 \ 사용)
   String _buildFfmpegCommand() {
     final safe = widget.project.title.replaceAll(RegExp(r'[^\w가-힣]'), '_');
     final hasTts = widget.project.ttsAudioBytes != null;
+    final hasPerSceneTts = _hasPerSceneTts;
     final sceneCount = widget.project.scenes.length;
     final hasIntro = _includeIntro;
     final hasOutro = _includeOutro;
+
+    // ── 장면별 TTS 모드: 각 이미지+해당 TTS를 개별 합성 후 concat ──
+    // 인트로/아웃트로 없고, 장면별 TTS 존재 시 사용 (가장 정확한 싱크)
+    if (hasPerSceneTts && !hasIntro && !hasOutro) {
+      final inputLines = StringBuffer();
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = widget.project.scenes[i];
+        final dur = scene.duration.toStringAsFixed(3);
+        final hasImg = scene.imageBytes != null;
+        if (hasImg) {
+          inputLines.write('  -loop 1 -t $dur -i "scenes/scene_${i + 1}.jpg" \\\n');
+        } else {
+          inputLines.write('  -f lavfi -t $dur -i "color=black:s=1920x1080:r=25" \\\n');
+        }
+        // TTS 오디오 입력 (각 장면)
+        if (scene.sceneTtsBytes != null) {
+          inputLines.write('  -i "scenes/scene_${i + 1}_tts.wav" \\\n');
+        }
+      }
+
+      // filter_complex: 각 (이미지,오디오) 쌍 → [vi][ai] → concat
+      final filterParts = StringBuffer();
+      final vidConcat = StringBuffer();
+      final audConcat = StringBuffer();
+      int inputIdx = 0;
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = widget.project.scenes[i];
+        final d = (scene.duration * 25).toInt();
+        final vidIdx = inputIdx++;
+        final audIdx = scene.sceneTtsBytes != null ? inputIdx++ : -1;
+        filterParts.write('[$vidIdx:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,'
+            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[sv$i];");
+        vidConcat.write('[sv$i]');
+        if (audIdx >= 0) {
+          audConcat.write('[$audIdx:a]');
+        } else {
+          filterParts.write('aevalsrc=0:d=${scene.duration.toStringAsFixed(3)}[sa$i];');
+          audConcat.write('[sa$i]');
+        }
+      }
+      filterParts.write('${vidConcat}concat=n=$sceneCount:v=1:a=0[vid];');
+      filterParts.write('${audConcat}concat=n=$sceneCount:v=0:a=1[aud];');
+      filterParts.write('[vid]${_subtitleFilter()}[out]');
+
+      return '''ffmpeg -y \\
+${inputLines}  -filter_complex "${filterParts}" \\
+  -map "[out]" -map "[aud]" \\
+  -c:v libx264 -preset medium -crf 18 \\
+  -c:a aac -b:a 192k -r 25 \\
+  "${safe}_final.mp4"''';
+    }
 
     // 인트로/아웃트로가 있으면 concat 방식 사용
     if ((hasIntro || hasOutro) && sceneCount > 0) {
@@ -333,9 +389,9 @@ ${outroPart}${audioInput}  -filter_complex "${concatParts}concat=n=$n:v=1:a=1[vi
   "${safe}_final.mp4"''';
     }
 
-    // 모든 경우: 이미지 있으면 -loop 1 -t, 없으면 검정화면 (lavfi color=black)
+    // 폴백: 이미지+전체TTS 방식 (소수점 duration 유지)
     final inputs = List.generate(sceneCount, (i) {
-      final dur = widget.project.scenes[i].duration.toInt();
+      final dur = widget.project.scenes[i].duration.toStringAsFixed(3);
       final hasImg = widget.project.scenes[i].imageBytes != null;
       if (hasImg) {
         return '  -loop 1 -t $dur -i "scenes/scene_${i + 1}.jpg" \\\n';
@@ -380,9 +436,55 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
   String _buildFfmpegCommandWindows() {
     final safe = widget.project.title.replaceAll(RegExp(r'[^\w가-힣]'), '_');
     final hasTts = widget.project.ttsAudioBytes != null;
+    final hasPerSceneTts = _hasPerSceneTts;
     final sceneCount = widget.project.scenes.length;
     final hasIntro = _includeIntro;
     final hasOutro = _includeOutro;
+
+    // ── 장면별 TTS 모드 (Windows) ──
+    if (hasPerSceneTts && !hasIntro && !hasOutro) {
+      final inputParts = StringBuffer();
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = widget.project.scenes[i];
+        final dur = scene.duration.toStringAsFixed(3);
+        final hasImg = scene.imageBytes != null;
+        if (hasImg) {
+          inputParts.write('-loop 1 -t $dur -i "scenes/scene_${i + 1}.jpg" ');
+        } else {
+          inputParts.write('-f lavfi -t $dur -i "color=black:s=1920x1080:r=25" ');
+        }
+        if (scene.sceneTtsBytes != null) {
+          inputParts.write('-i "scenes/scene_${i + 1}_tts.wav" ');
+        }
+      }
+      final filterParts = StringBuffer();
+      final vidConcat = StringBuffer();
+      final audConcat = StringBuffer();
+      int inputIdx = 0;
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = widget.project.scenes[i];
+        final d = (scene.duration * 25).toInt();
+        final vidIdx = inputIdx++;
+        final audIdx = scene.sceneTtsBytes != null ? inputIdx++ : -1;
+        filterParts.write('[$vidIdx:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,'
+            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[sv$i];");
+        vidConcat.write('[sv$i]');
+        if (audIdx >= 0) {
+          audConcat.write('[$audIdx:a]');
+        } else {
+          filterParts.write('aevalsrc=0:d=${scene.duration.toStringAsFixed(3)}[sa$i];');
+          audConcat.write('[sa$i]');
+        }
+      }
+      filterParts.write('${vidConcat}concat=n=$sceneCount:v=1:a=0[vid];');
+      filterParts.write('${audConcat}concat=n=$sceneCount:v=0:a=1[aud];');
+      filterParts.write('[vid]${_subtitleFilter()}[out]');
+      return '%FFMPEG% -y ${inputParts}'
+          '-filter_complex "${filterParts}" '
+          '-map "[out]" -map "[aud]" '
+          '-c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -r 25 "${safe}_final.mp4"';
+    }
 
     // 인트로/아웃트로가 있으면 concat 방식 사용
     if ((hasIntro || hasOutro) && sceneCount > 0) {
@@ -410,9 +512,9 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           '-c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -r 25 "${safe}_final.mp4"';
     }
 
-    // Windows: 이미지 있으면 -loop 1 -t, 없으면 검정화면 (lavfi color=black)
+    // 폴백: 이미지+전체TTS 방식 (소수점 duration 유지)
     final winInputs = List.generate(sceneCount, (i) {
-      final dur = widget.project.scenes[i].duration.toInt();
+      final dur = widget.project.scenes[i].duration.toStringAsFixed(3);
       final hasImg = widget.project.scenes[i].imageBytes != null;
       if (hasImg) {
         return '-loop 1 -t $dur -i "scenes/scene_${i + 1}.jpg" ';
@@ -456,6 +558,18 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     }
   }
 
+  // 오디오 바이트로 재생 시간(초) 계산
+  double _calcAudioDuration(Uint8List bytes) {
+    if (WebAudioHelper.isWav(bytes)) {
+      final pcmLen = bytes.length > 44 ? bytes.length - 44 : bytes.length;
+      return pcmLen / (24000 * 2);
+    } else if (WebAudioHelper.isMp3(bytes)) {
+      return bytes.length / 16000; // 128kbps 추정
+    } else {
+      return bytes.length / (24000 * 2); // raw PCM 24kHz 16bit mono
+    }
+  }
+
   Future<void> _startRendering() async {
     if (widget.project.scenes.isEmpty) {
       _showSnack('장면이 없습니다. 먼저 미디어를 생성해주세요.');
@@ -464,6 +578,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
 
     final hasImages = widget.project.scenes.any((s) => s.imageBytes != null);
     final hasTts = widget.project.ttsAudioBytes != null;
+    final hasPerSceneTts = _hasPerSceneTts;
     final safe = widget.project.title.replaceAll(RegExp(r'[^\w가-힣]'), '_');
     final scenes = widget.project.scenes;
 
@@ -474,6 +589,40 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     });
 
     try {
+      // ── TTS 길이 기반 장면 duration 정확 계산 ──
+      if (hasPerSceneTts) {
+        // 장면별 TTS가 있으면 각 장면 TTS 길이로 duration 정확히 설정
+        int syncedCount = 0;
+        for (final scene in scenes) {
+          if (scene.sceneTtsBytes != null) {
+            scene.duration = _calcAudioDuration(scene.sceneTtsBytes!).clamp(0.5, 300.0);
+            syncedCount++;
+          }
+        }
+        final totalSynced = scenes.fold<double>(0.0, (s, e) => s + e.duration);
+        final m = totalSynced ~/ 60;
+        final s = (totalSynced % 60).toInt();
+        setState(() {
+          _renderLog += '[TTS 싱크] 장면별 TTS 길이 적용: $syncedCount/${scenes.length}개 장면 '
+              '→ 총 영상 길이 ${m}분 ${s}초\n';
+        });
+      } else if (hasTts && scenes.isNotEmpty) {
+        // 합본 TTS만 있으면 균등 분배 (폴백)
+        final ttsBytes = widget.project.ttsAudioBytes!;
+        final ttsTotalSecs = _calcAudioDuration(ttsBytes);
+        final perScene = (ttsTotalSecs / scenes.length).clamp(1.0, 120.0);
+        for (final s in scenes) {
+          s.duration = perScene;
+        }
+        final ttsMin = ttsTotalSecs ~/ 60;
+        final ttsSec = (ttsTotalSecs % 60).toInt();
+        setState(() {
+          _renderLog += '[TTS 싱크] 합본 TTS 총 길이 ${ttsMin}분 ${ttsSec}초 → '
+              '장면당 ${perScene.toStringAsFixed(1)}초 균등 분배\n'
+              '⚠️ TTS를 다시 생성하면 장면별 정확한 싱크가 적용됩니다.\n';
+        });
+      }
+
       // ── 1단계: SRT 자막 생성 ──
       await Future.delayed(const Duration(milliseconds: 200));
 
@@ -557,9 +706,11 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           '  echo "❌ 오류 발생. FFmpeg 설치: brew install ffmpeg (Mac) / sudo apt install ffmpeg (Linux)"\n'
           'fi\n';
 
-      // README (첫 장면 duration 전달 - README에 장면당 초 표시용)
+      // README (장면별 TTS 여부 + 총 영상 길이 포함)
       final sceneDuration = scenes.isNotEmpty ? scenes.first.duration : 5.0;
-      final readme = _buildReadme(safe, scenes.length, hasImages, hasTts, ffmpegCmd, sceneDuration);
+      final totalVideoSecs = scenes.fold<double>(0.0, (s, e) => s + e.duration);
+      final readme = _buildReadme(safe, scenes.length, hasImages, hasTts || hasPerSceneTts,
+          ffmpegCmd, sceneDuration, hasPerSceneTts: hasPerSceneTts, totalVideoSecs: totalVideoSecs);
 
       // ── 4단계: ZIP 아카이브용 파일 목록 조립 ──
       await Future.delayed(const Duration(milliseconds: 200));
@@ -586,21 +737,31 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       final shBytes = utf8.encode(shScript);
       fileList.add(['render.sh', shBytes]);
 
-      // ── 5단계: 이미지 파일들 추가 ──
+      // ── 5단계: 이미지 + 장면별 TTS 파일 추가 ──
       int imageCount = 0;
+      int ttsCount = 0;
       for (int i = 0; i < scenes.length; i++) {
         final scene = scenes[i];
+        // 이미지 추가
         if (scene.imageBytes != null) {
-          final imgBytes = scene.imageBytes!;
-          fileList.add(['scenes/scene_${i + 1}.jpg', imgBytes]);
+          fileList.add(['scenes/scene_${i + 1}.jpg', scene.imageBytes!]);
           imageCount++;
+        }
+        // 장면별 TTS 추가 (있으면)
+        if (scene.sceneTtsBytes != null) {
+          final sceneTts = scene.sceneTtsBytes!;
+          final wavBytes = WebAudioHelper.isWav(sceneTts)
+              ? sceneTts
+              : WebAudioHelper.pcmToWav(sceneTts, sampleRate: 24000);
+          fileList.add(['scenes/scene_${i + 1}_tts.wav', wavBytes]);
+          ttsCount++;
         }
         // 진행률 업데이트
         if (i % 3 == 0) {
           final progress = 0.4 + (i / scenes.length) * 0.4;
           setState(() {
             _renderProgress = progress;
-            _renderLog += '[${_timestamp()}] 이미지 추가 중... ($imageCount/${scenes.length})\n';
+            _renderLog += '[${_timestamp()}] 이미지/TTS 추가 중... (이미지: $imageCount, TTS: $ttsCount/${scenes.length})\n';
           });
           await Future.delayed(const Duration(milliseconds: 50));
         }
@@ -610,9 +771,21 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       await Future.delayed(const Duration(milliseconds: 200));
       setState(() { _renderProgress = 0.85; _renderLog += '[${_timestamp()}] TTS 오디오 추가 중...\n'; });
 
-      if (hasTts) {
+      if (hasPerSceneTts) {
+        // 장면별 TTS 모드: 합본도 참고용으로 포함 (재생용)
+        if (hasTts) {
+          final ttsBytes = widget.project.ttsAudioBytes!;
+          final audioBytes = WebAudioHelper.isWav(ttsBytes)
+              ? ttsBytes
+              : WebAudioHelper.pcmToWav(ttsBytes, sampleRate: 24000);
+          fileList.add(['${safe}_tts_combined.wav', audioBytes]);
+        }
+        setState(() {
+          _renderLog += '[${_timestamp()}] ✅ 장면별 TTS 모드: $ttsCount개 장면 TTS가 각 이미지와 1:1 매핑됩니다.\n';
+        });
+      } else if (hasTts) {
+        // 폴백: 합본 TTS만 있는 경우
         final ttsBytes = widget.project.ttsAudioBytes!;
-        // WAV 유효성 확인 후 추가
         final audioBytes = WebAudioHelper.isWav(ttsBytes)
             ? ttsBytes
             : WebAudioHelper.pcmToWav(ttsBytes, sampleRate: 24000);
@@ -655,13 +828,20 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
   }
 
   String _buildReadme(String safe, int sceneCount, bool hasImages, bool hasTts,
-      String ffmpegCmd, double sceneDuration) {
+      String ffmpegCmd, double sceneDuration,
+      {bool hasPerSceneTts = false, double totalVideoSecs = 0.0}) {
+    final totalMin = totalVideoSecs ~/ 60;
+    final totalSec = (totalVideoSecs % 60).toInt();
+    final ttsMode = hasPerSceneTts
+        ? '장면별 TTS ✅ (각 장면 길이가 TTS와 정확히 일치)'
+        : (hasTts ? '합본 TTS ✅ (균등 분배)' : '없음 (TTS 생성 필요)');
     return '''TubeMaster 렌더링 패키지
 ========================
 프로젝트: ${widget.project.title}
-장면 수: ${sceneCount}개 (장면당 ${sceneDuration.toInt()}초)
+장면 수: ${sceneCount}개
+총 영상 길이: ${totalMin}분 ${totalSec}초
 이미지: ${hasImages ? '포함 ✅' : '없음 (이미지 생성 필요)'}
-TTS 오디오: ${hasTts ? '포함 ✅' : '없음 (TTS 생성 필요)'}
+TTS 오디오: $ttsMode
 랜덤 효과: ${_includeRandomEffect ? '활성화 ✅' : '비활성'}
 인트로: ${_includeIntro ? '활성화 ✅ (intro.mp4 직접 추가 필요)' : '없음'}
 아웃트로: ${_includeOutro ? '활성화 ✅ (outro.mp4 직접 추가 필요)' : '없음'}
@@ -676,9 +856,12 @@ TTS 오디오: ${hasTts ? '포함 ✅' : '없음 (TTS 생성 필요)'}
   render.sh           ← macOS/Linux 실행 스크립트
   scenes/
     scene_1.jpg       ← 장면 이미지들
+    scene_1_tts.wav   ← 장면별 TTS 음성 (장면별 TTS 생성 시)
     scene_2.jpg
+    scene_2_tts.wav
     ...
-  ${safe}_tts.wav    ← TTS 음성 (있는 경우)
+  ${safe}_tts_combined.wav ← 합본 TTS (참고용, 장면별 TTS 모드)
+  ${safe}_tts.wav    ← TTS 음성 (합본 TTS 모드)
   intro.mp4          ← 인트로 영상 (직접 추가 필요)
   outro.mp4          ← 아웃트로 영상 (직접 추가 필요)
 
