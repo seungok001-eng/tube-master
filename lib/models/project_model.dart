@@ -25,7 +25,7 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.geminiPro: return 'Gemini 2.5 Pro (최고품질 🏆)';
       case ScriptAiModel.gemini3Flash: return 'Gemini 3.0 Flash (최신 🚀)';
       case ScriptAiModel.gemini31FlashImage: return 'Gemini 3.1 Flash-Image (이미지 특화)';
-      case ScriptAiModel.gemini3ProImage: return 'Gemini 3 Pro Image (최고급 이미지)';
+      case ScriptAiModel.gemini3ProImage: return 'Gemini 3.1 Pro (최고급 🏆)';  // 3 Pro Image 종료 → 3.1 Pro로 대체
       case ScriptAiModel.gemini31Pro: return 'Gemini 3.1 Pro (최고지능 🧠)';
       case ScriptAiModel.claude35Sonnet: return 'Claude 3.5 Sonnet';
       case ScriptAiModel.claude4Sonnet: return 'Claude 3.7 Sonnet (최신)';
@@ -39,7 +39,7 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.geminiPro: return 'gemini-2.5-pro';
       case ScriptAiModel.gemini3Flash: return 'gemini-3-flash-preview';
       case ScriptAiModel.gemini31FlashImage: return 'gemini-3.1-flash-image-preview';
-      case ScriptAiModel.gemini3ProImage: return 'gemini-3-pro-image-preview';
+      case ScriptAiModel.gemini3ProImage: return 'gemini-3.1-pro-preview';  // gemini-3-pro-image-preview 2026.03.09 종료
       case ScriptAiModel.gemini31Pro: return 'gemini-3.1-pro-preview';
       case ScriptAiModel.claude35Sonnet: return 'claude-3-5-sonnet-20241022';
       case ScriptAiModel.claude4Sonnet: return 'claude-3-7-sonnet-20250219';

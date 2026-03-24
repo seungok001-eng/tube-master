@@ -174,7 +174,7 @@ $styleGuide
       final response = await _callGeminiLarge(
         systemPrompt: systemPrompt,
         userMessage: '다음 대본을 장면으로 분할해주세요:\n\n$script',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3-flash-preview',  // 최신 모델 (2025.12)
       );
       return _parseSceneJson(response);
     }
@@ -225,7 +225,7 @@ $styleGuide
           final response = await _callGeminiLarge(
             systemPrompt: systemPrompt,
             userMessage: '다음 대본을 장면으로 분할해주세요 (파트 ${idx + 1}/${chunks.length}):\n\n${chunks[idx]}',
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3-flash-preview',  // 최신 모델 (2025.12)
           );
           results[idx] = _parseSceneJson(response);
           completed++;
