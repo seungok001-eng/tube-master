@@ -162,57 +162,89 @@ $styleGuide
 ]
 ''';
 
-    // 대본이 긴 경우 청크로 분할하여 처리 (3000자 기준)
-    const chunkSize = 3000;
-    if (script.length > chunkSize) {
-      return await _splitScenesInChunks(script, systemPrompt, chunkSize);
+    // ── 대본 길이별 처리 전략 ──
+    // • ~8000자:  단일 요청 (한 번에 처리)
+    // • ~30000자: 8000자 청크 × 병렬 처리 (최대 4개 동시)
+    // • 30000자+: 8000자 청크 × 병렬 처리 (세마포어 4개 제한)
+    const singleLimit = 8000;
+    const chunkSize   = 8000;
+
+    if (script.length <= singleLimit) {
+      // 단일 요청
+      final response = await _callGeminiLarge(
+        systemPrompt: systemPrompt,
+        userMessage: '다음 대본을 장면으로 분할해주세요:\n\n$script',
+        model: 'gemini-2.5-flash',
+      );
+      return _parseSceneJson(response);
     }
 
-    final response = await _callGeminiLarge(
-      systemPrompt: systemPrompt,
-      userMessage: '다음 대본을 장면으로 분할해주세요:\n\n$script',
-      model: 'gemini-2.5-flash',
-    );
-
-    return _parseSceneJson(response);
+    // 긴 대본: 청크 병렬 처리
+    return await _splitScenesInChunks(script, systemPrompt, chunkSize);
   }
 
-  // 긴 대본을 청크로 나눠 분할 처리
+  // 긴 대본을 청크로 나눠 병렬 분할 처리
   Future<List<Map<String, String>>> _splitScenesInChunks(
       String script, String systemPrompt, int chunkSize) async {
-    final allScenes = <Map<String, String>>[];
-    int offset = 0;
-    int chunkIndex = 1;
 
+    // 1. 청크 목록 생성 (문장 경계에서 자르기)
+    final chunks = <String>[];
+    int offset = 0;
     while (offset < script.length) {
       int end = offset + chunkSize;
       if (end < script.length) {
-        // 문장 끊김 방지: 마지막 마침표/줄바꿈 위치에서 자르기
-        final cutPos = script.lastIndexOf(RegExp(r'[.!?\n]'), end);
-        if (cutPos > offset + 500) end = cutPos + 1;
+        // 문장 끊김 방지: 가장 가까운 줄바꿈/마침표 위치에서 자르기
+        final cutPos = script.lastIndexOf(RegExp(r'[\n.!?]'), end);
+        if (cutPos > offset + 1000) end = cutPos + 1;
       } else {
         end = script.length;
       }
-
-      final chunk = script.substring(offset, end).trim();
+      chunks.add(script.substring(offset, end).trim());
       offset = end;
-
-      final response = await _callGeminiLarge(
-        systemPrompt: systemPrompt,
-        userMessage: '다음 대본을 장면으로 분할해주세요 (파트 $chunkIndex):\n\n$chunk',
-        model: 'gemini-2.5-flash',
-      );
-
-      final scenes = _parseSceneJson(response);
-      allScenes.addAll(scenes);
-      chunkIndex++;
-
-      // 청크 간 짧은 딜레이 (Rate limit 방지)
-      if (offset < script.length) {
-        await Future.delayed(const Duration(milliseconds: 500));
-      }
     }
 
+    // 2. 병렬 처리 (최대 4개 동시 요청)
+    const maxParallel = 4;
+    final results = List<List<Map<String, String>>?>.filled(chunks.length, null);
+    int completed = 0;
+
+    // 세마포어 방식: 최대 maxParallel개 동시 실행
+    final semaphore = List<bool>.filled(maxParallel, false);
+    final futures = <Future<void>>[];
+
+    for (int i = 0; i < chunks.length; i++) {
+      final idx = i;
+      final future = Future<void>(() async {
+        // 슬롯 대기 (간단한 폴링 방식)
+        while (true) {
+          final slot = semaphore.indexOf(false);
+          if (slot >= 0) { semaphore[slot] = true; break; }
+          await Future.delayed(const Duration(milliseconds: 100));
+        }
+        try {
+          final response = await _callGeminiLarge(
+            systemPrompt: systemPrompt,
+            userMessage: '다음 대본을 장면으로 분할해주세요 (파트 ${idx + 1}/${chunks.length}):\n\n${chunks[idx]}',
+            model: 'gemini-2.5-flash',
+          );
+          results[idx] = _parseSceneJson(response);
+          completed++;
+        } finally {
+          final slot = semaphore.indexOf(true);
+          if (slot >= 0) semaphore[slot] = false;
+        }
+      });
+      futures.add(future);
+    }
+
+    // 3. 모든 청크 완료 대기
+    await Future.wait(futures);
+
+    // 4. 순서 보장하여 합치기
+    final allScenes = <Map<String, String>>[];
+    for (final sceneList in results) {
+      if (sceneList != null) allScenes.addAll(sceneList);
+    }
     return allScenes;
   }
 
