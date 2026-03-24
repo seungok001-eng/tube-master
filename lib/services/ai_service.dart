@@ -150,36 +150,196 @@ $styleGuide
 규칙:
 1. 대본을 의미 단위로 분할하되 각 장면은 10~30초 분량(약 50~120자)이 되도록 합니다
 2. 각 장면에 어울리는 이미지 생성 프롬프트를 영어로 작성합니다
-3. 반드시 아래 JSON 형식으로만 응답하세요
+3. 반드시 아래 JSON 형식으로만 응답하세요 (코드블록 없이 순수 JSON만)
+4. imagePrompt는 간결하게 100자 이내 영어로 작성하세요
 
 응답 형식:
 [
   {
     "script": "장면 대본 텍스트",
-    "imagePrompt": "English image generation prompt for this scene"
+    "imagePrompt": "English image prompt (keep under 100 chars)"
   }
 ]
 ''';
 
-    final response = await _callGemini(
+    // 대본이 긴 경우 청크로 분할하여 처리 (3000자 기준)
+    const chunkSize = 3000;
+    if (script.length > chunkSize) {
+      return await _splitScenesInChunks(script, systemPrompt, chunkSize);
+    }
+
+    final response = await _callGeminiLarge(
       systemPrompt: systemPrompt,
       userMessage: '다음 대본을 장면으로 분할해주세요:\n\n$script',
       model: 'gemini-2.5-flash',
     );
 
+    return _parseSceneJson(response);
+  }
+
+  // 긴 대본을 청크로 나눠 분할 처리
+  Future<List<Map<String, String>>> _splitScenesInChunks(
+      String script, String systemPrompt, int chunkSize) async {
+    final allScenes = <Map<String, String>>[];
+    int offset = 0;
+    int chunkIndex = 1;
+
+    while (offset < script.length) {
+      int end = offset + chunkSize;
+      if (end < script.length) {
+        // 문장 끊김 방지: 마지막 마침표/줄바꿈 위치에서 자르기
+        final cutPos = script.lastIndexOf(RegExp(r'[.!?\n]'), end);
+        if (cutPos > offset + 500) end = cutPos + 1;
+      } else {
+        end = script.length;
+      }
+
+      final chunk = script.substring(offset, end).trim();
+      offset = end;
+
+      final response = await _callGeminiLarge(
+        systemPrompt: systemPrompt,
+        userMessage: '다음 대본을 장면으로 분할해주세요 (파트 $chunkIndex):\n\n$chunk',
+        model: 'gemini-2.5-flash',
+      );
+
+      final scenes = _parseSceneJson(response);
+      allScenes.addAll(scenes);
+      chunkIndex++;
+
+      // 청크 간 짧은 딜레이 (Rate limit 방지)
+      if (offset < script.length) {
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
+
+    return allScenes;
+  }
+
+  // JSON 파싱 + 잘린 JSON 자동 복구
+  List<Map<String, String>> _parseSceneJson(String response) {
     try {
       String cleaned = response.trim();
+      // 코드블록 제거
       if (cleaned.startsWith('```json')) cleaned = cleaned.substring(7);
-      if (cleaned.startsWith('```')) cleaned = cleaned.substring(3);
+      else if (cleaned.startsWith('```')) cleaned = cleaned.substring(3);
       if (cleaned.endsWith('```')) cleaned = cleaned.substring(0, cleaned.length - 3);
+      cleaned = cleaned.trim();
 
-      final List<dynamic> parsed = jsonDecode(cleaned.trim());
-      return parsed.map<Map<String, String>>((item) => {
-        'script': item['script']?.toString() ?? '',
-        'imagePrompt': item['imagePrompt']?.toString() ?? '',
-      }).toList();
+      // 1차 시도: 정상 파싱
+      try {
+        final List<dynamic> parsed = jsonDecode(cleaned);
+        return _mapSceneList(parsed);
+      } catch (_) {}
+
+      // 2차 시도: JSON 배열 부분 추출
+      final startIdx = cleaned.indexOf('[');
+      if (startIdx >= 0) {
+        final jsonPart = cleaned.substring(startIdx);
+        // 완전한 마지막 객체 위치 찾기 (잘린 JSON 복구)
+        final recovered = _recoverTruncatedJsonArray(jsonPart);
+        if (recovered != null) {
+          final List<dynamic> parsed = jsonDecode(recovered);
+          return _mapSceneList(parsed);
+        }
+      }
+
+      throw Exception('JSON 파싱 불가');
     } catch (e) {
-      throw Exception('장면 분할 파싱 오류: $e\n응답: $response');
+      throw Exception('장면 분할 파싱 오류: $e\n응답: ${response.substring(0, response.length.clamp(0, 300))}...');
+    }
+  }
+
+  List<Map<String, String>> _mapSceneList(List<dynamic> parsed) {
+    return parsed.map<Map<String, String>>((item) => {
+      'script': item['script']?.toString() ?? '',
+      'imagePrompt': item['imagePrompt']?.toString() ?? '',
+    }).toList();
+  }
+
+  // 잘린 JSON 배열 복구: 완전한 마지막 객체까지만 추출
+  String? _recoverTruncatedJsonArray(String jsonStr) {
+    // 완성된 객체들만 추출: }, 패턴으로 마지막 완전한 객체 뒤를 찾음
+    int lastValidEnd = -1;
+    int depth = 0;
+    bool inString = false;
+    bool escape = false;
+
+    for (int i = 0; i < jsonStr.length; i++) {
+      final ch = jsonStr[i];
+      if (escape) { escape = false; continue; }
+      if (ch == '\\' && inString) { escape = true; continue; }
+      if (ch == '"') { inString = !inString; continue; }
+      if (inString) continue;
+
+      if (ch == '{' || ch == '[') depth++;
+      else if (ch == '}' || ch == ']') {
+        depth--;
+        if (depth == 1 && ch == '}') {
+          // 배열 내 객체 하나가 완전히 닫힘
+          lastValidEnd = i;
+        }
+        if (depth == 0) {
+          // 전체 배열이 완전히 닫힘
+          return jsonStr.substring(0, i + 1);
+        }
+      }
+    }
+
+    // 배열이 잘린 경우: 마지막 완전한 객체까지 + ']' 추가
+    if (lastValidEnd > 0) {
+      return '${jsonStr.substring(0, lastValidEnd + 1)}]';
+    }
+    return null;
+  }
+
+  // 출력 토큰이 충분한 Gemini 호출 (장면 분할 전용)
+  Future<String> _callGeminiLarge({
+    required String systemPrompt,
+    required String userMessage,
+    required String model,
+  }) async {
+    final url = '$_baseUrl/models/$model:generateContent?key=$apiKey';
+    final body = jsonEncode({
+      'system_instruction': {
+        'parts': [{'text': systemPrompt}]
+      },
+      'contents': [
+        {
+          'role': 'user',
+          'parts': [{'text': userMessage}]
+        }
+      ],
+      'generationConfig': {
+        'temperature': 0.7,
+        'maxOutputTokens': 65535,  // 최대 출력 토큰 (잘림 방지)
+        'responseMimeType': 'application/json',  // JSON 모드로 강제
+      }
+    });
+
+    final response = await http.post(
+      Uri.parse(url),
+      headers: {'Content-Type': 'application/json'},
+      body: body,
+    ).timeout(const Duration(minutes: 10));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      // finishReason 확인 (MAX_TOKENS이면 잘린 것)
+      final finishReason = data['candidates']?[0]?['finishReason'] ?? '';
+      final text = data['candidates'][0]['content']['parts'][0]['text'] ?? '';
+      if (finishReason == 'MAX_TOKENS') {
+        // 잘렸지만 복구 시도를 위해 그냥 반환 (파서에서 복구)
+        return text;
+      }
+      return text;
+    } else {
+      String errMsg = 'Gemini API 오류 (${response.statusCode})';
+      try {
+        final errData = jsonDecode(response.body);
+        errMsg = '❌ Gemini API 오류: ${errData['error']?['message'] ?? ''}';
+      } catch (_) {}
+      throw Exception(errMsg);
     }
   }
 
