@@ -476,17 +476,27 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     try {
       // ── 1단계: SRT 자막 생성 ──
       await Future.delayed(const Duration(milliseconds: 200));
-      setState(() { _renderProgress = 0.1; _renderLog += '[${_timestamp()}] 자막(SRT) 생성 중...\n'; });
+
+      // 총 예상 영상 길이 계산 (각 장면 duration 합계)
+      final totalSecs = scenes.fold<double>(0.0, (sum, s) => sum + s.duration);
+      final totalMin = totalSecs ~/ 60;
+      final totalSecR = (totalSecs % 60).toInt();
+      setState(() {
+        _renderProgress = 0.1;
+        _renderLog += '[${_timestamp()}] 자막(SRT) 생성 중...\n'
+            '[정보] 장면 ${scenes.length}개 × 장면당 ${scenes.first.duration.toStringAsFixed(1)}초 '
+            '= 총 영상 길이 약 ${totalMin}분 ${totalSecR}초\n';
+      });
 
       final srtBuffer = StringBuffer();
       double elapsed = 0.0;
-      final sceneDuration = scenes.isNotEmpty ? scenes.first.duration : 5.0;
       int srtIndex = 1;
       for (int i = 0; i < scenes.length; i++) {
+        final sceneDur = scenes[i].duration;  // 각 장면별 duration 사용
         final text = scenes[i].scriptText.trim();
         // 자막 분할: 글자수 기준 의미단위 분리
         final chunks = _splitSubtitle(text, _subtitleMaxChars);
-        final chunkDur = sceneDuration / chunks.length;
+        final chunkDur = sceneDur / chunks.length;
         for (int c = 0; c < chunks.length; c++) {
           final start = _formatSrtTime(elapsed + c * chunkDur);
           final end   = _formatSrtTime(elapsed + (c + 1) * chunkDur);
@@ -495,7 +505,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           srtBuffer.writeln(chunks[c]);
           srtBuffer.writeln();
         }
-        elapsed += sceneDuration;
+        elapsed += sceneDur;
       }
 
       // ── 2단계: scenes.txt (FFmpeg concat 목록) ──
@@ -505,7 +515,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       final scenesBuffer = StringBuffer();
       for (int i = 0; i < scenes.length; i++) {
         scenesBuffer.writeln("file 'scenes/scene_${i + 1}.jpg'");
-        scenesBuffer.writeln("duration ${sceneDuration.toInt()}");
+        scenesBuffer.writeln("duration ${scenes[i].duration.toStringAsFixed(2)}");  // 각 장면 duration 사용 + 소수점 유지
       }
 
       // ── 3단계: FFmpeg 렌더 스크립트 ──
@@ -547,7 +557,8 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           '  echo "❌ 오류 발생. FFmpeg 설치: brew install ffmpeg (Mac) / sudo apt install ffmpeg (Linux)"\n'
           'fi\n';
 
-      // README
+      // README (첫 장면 duration 전달 - README에 장면당 초 표시용)
+      final sceneDuration = scenes.isNotEmpty ? scenes.first.duration : 5.0;
       final readme = _buildReadme(safe, scenes.length, hasImages, hasTts, ffmpegCmd, sceneDuration);
 
       // ── 4단계: ZIP 아카이브용 파일 목록 조립 ──
