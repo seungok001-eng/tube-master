@@ -518,6 +518,7 @@ class _ScriptScreenState extends State<ScriptScreen> {
                     ScriptAiModel.gemini3Flash,
                     ScriptAiModel.gemini31FlashImage,
                     ScriptAiModel.gemini3ProImage,
+                    ScriptAiModel.gemini31Pro,
                   ].map((m) => _buildModelOption(m, provider)),
                   const SizedBox(height: 10),
                   // Claude 그룹
