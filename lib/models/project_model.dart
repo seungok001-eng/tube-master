@@ -107,8 +107,9 @@ class SceneModel {
   bool isGenerated;
   
   // 런타임 전용 (JSON 저장 안함)
-  Uint8List? imageBytes; // 생성된 이미지 바이트
-  Uint8List? videoBytes; // 생성된 AI 영상 바이트 (mp4)
+  Uint8List? imageBytes;    // 생성된 이미지 바이트
+  Uint8List? videoBytes;    // 생성된 AI 영상 바이트 (mp4)
+  Uint8List? sceneTtsBytes; // 장면별 TTS 오디오 바이트 (duration 자동 계산용)
 
   SceneModel({
     required this.id,

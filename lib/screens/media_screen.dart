@@ -3057,6 +3057,18 @@ class _TtsTabState extends State<_TtsTab>
     {'id':'nhero',     'name':'Hero',   'gender':'남성', 'age':'성인', 'personality':'스페인어·중후','lang':'스페인어','desc':'스페인어 · 중후한 남성'},
   ];
 
+  // ─── TTS 오디오 길이 계산 (바이트 → 초) ───
+  double _calcTtsDuration(Uint8List bytes) {
+    if (WebAudioHelper.isWav(bytes)) {
+      final pcmLen = bytes.length > 44 ? bytes.length - 44 : bytes.length;
+      return pcmLen / (24000 * 2); // 16bit mono 24kHz
+    } else if (WebAudioHelper.isMp3(bytes)) {
+      return bytes.length / 16000; // 128kbps 기준
+    } else {
+      return bytes.length / (24000 * 2); // raw PCM
+    }
+  }
+
   Future<void> _generateTts() async {
     if (widget.project.scenes.isEmpty) {
       _showSnack('장면이 없습니다. 먼저 장면을 분할해주세요.');
@@ -3069,67 +3081,88 @@ class _TtsTabState extends State<_TtsTab>
       return;
     }
 
+    if (_engine == TtsEngine.local) {
+      setState(() {
+        _isGenerating = false;
+        _statusMsg = '⚠️ 로컬 TTS는 아래 "오디오 파일 선택" 버튼을 사용해주세요.';
+      });
+      return;
+    }
+
     setState(() {
       _isGenerating = true;
       _isCancelled = false;
       _statusMsg = 'TTS 생성 준비 중...';
     });
 
-    final fullScript = widget.project.scenes
-        .map((s) => s.scriptText)
-        .join(' ');
+    final scenes = widget.project.scenes;
 
     try {
-      Uint8List audioBytes;
+      // ── 장면별 개별 TTS 생성 ──
+      // 각 장면 대본 → 개별 TTS → scene.sceneTtsBytes + scene.duration 자동 계산
+      final allChunks = <Uint8List>[];
 
-      switch (_engine) {
-        case TtsEngine.gemini:
-          setState(() => _statusMsg = 'Gemini TTS 생성 중...');
-          final chunks = TtsChunkProcessor.splitTextIntoChunks(fullScript, chunkSize: 2000);
-          final chunkBytes = <Uint8List>[];
-          for (int i = 0; i < chunks.length; i++) {
-            if (_isCancelled) break;
-            setState(() => _statusMsg = 'Gemini TTS 생성 중... (${i+1}/${chunks.length})');
-            final bytes = await GeminiService(apiKey).generateTts(
-              text: chunks[i],
-              voiceName: _selectedGeminiVoice,
-              speakingRate: _speed,
+      for (int i = 0; i < scenes.length; i++) {
+        if (_isCancelled) break;
+        final scene = scenes[i];
+        final text = scene.scriptText.trim();
+        if (text.isEmpty) {
+          // 빈 장면: 0.5초 묵음
+          scene.duration = 0.5;
+          continue;
+        }
+
+        setState(() => _statusMsg = '[${i + 1}/${scenes.length}] 장면 ${i + 1} TTS 생성 중...');
+
+        Uint8List sceneBytes;
+        switch (_engine) {
+          case TtsEngine.gemini:
+            final chunks = TtsChunkProcessor.splitTextIntoChunks(text, chunkSize: 2000);
+            final chunkBytes = <Uint8List>[];
+            for (int c = 0; c < chunks.length; c++) {
+              if (_isCancelled) break;
+              setState(() => _statusMsg = '[${i + 1}/${scenes.length}] 장면 ${i + 1} TTS 생성 중... (청크 ${c + 1}/${chunks.length})');
+              final b = await GeminiService(apiKey).generateTts(
+                text: chunks[c],
+                voiceName: _selectedGeminiVoice,
+                speakingRate: _speed,
+              );
+              chunkBytes.add(b);
+            }
+            sceneBytes = TtsChunkProcessor.combineAudioBytes(chunkBytes);
+            break;
+
+          case TtsEngine.elevenlabs:
+            final truncated = text.length > 5000 ? text.substring(0, 5000) : text;
+            sceneBytes = await ElevenLabsService(apiKey).generateTts(
+              text: truncated,
+              voiceId: _elevenLabsVoiceId.isNotEmpty ? _elevenLabsVoiceId : '21m00Tcm4TlvDq8ikWAM',
+              speed: _speed,
             );
-            chunkBytes.add(bytes);
-          }
-          audioBytes = TtsChunkProcessor.combineAudioBytes(chunkBytes);
-          break;
+            break;
 
-        case TtsEngine.elevenlabs:
-          setState(() => _statusMsg = 'ElevenLabs TTS 생성 중...');
-          audioBytes = await ElevenLabsService(apiKey).generateTts(
-            text: fullScript.length > 5000 ? fullScript.substring(0, 5000) : fullScript,
-            voiceId: _elevenLabsVoiceId.isNotEmpty
-                ? _elevenLabsVoiceId
-                : '21m00Tcm4TlvDq8ikWAM', // Rachel 기본
-            speed: _speed,
-          );
-          break;
+          case TtsEngine.clova:
+            final clovaKeys = widget.provider.apiKeys;
+            sceneBytes = await ClovaTtsService(
+              clientId: clovaKeys.clovaApiKey,
+              clientSecret: clovaKeys.clovaApiSecret,
+            ).generateTts(
+              text: text,
+              speaker: _clovaVoiceId,
+              speed: (_speed * 2 - 2).round().clamp(-5, 5),
+            );
+            break;
 
-        case TtsEngine.clova:
-          setState(() => _statusMsg = 'CLOVA TTS 생성 중...');
-          final clovaKeys = widget.provider.apiKeys;
-          audioBytes = await ClovaTtsService(
-            clientId: clovaKeys.clovaApiKey,
-            clientSecret: clovaKeys.clovaApiSecret,
-          ).generateTts(
-            text: fullScript,
-            speaker: _clovaVoiceId,
-            speed: (_speed * 2 - 2).round().clamp(-5, 5),
-          );
-          break;
+          default:
+            continue;
+        }
 
-        case TtsEngine.local:
-          setState(() {
-            _isGenerating = false;
-            _statusMsg = '⚠️ 로컬 TTS는 아래 "오디오 파일 선택" 버튼을 사용해주세요.';
-          });
-          return;
+        // 장면별 TTS 저장 + duration 자동 계산
+        scene.sceneTtsBytes = sceneBytes;
+        scene.duration = _calcTtsDuration(sceneBytes).clamp(0.5, 300.0);
+        allChunks.add(sceneBytes);
+
+        setState(() => _statusMsg = '[${i + 1}/${scenes.length}] 장면 ${i + 1} 완료 (${scene.duration.toStringAsFixed(1)}초)');
       }
 
       if (_isCancelled) {
@@ -3140,17 +3173,21 @@ class _TtsTabState extends State<_TtsTab>
         return;
       }
 
-      // 성공: 프로젝트에 오디오 데이터 저장
+      // 전체 합본 오디오 생성 (재생/다운로드용)
+      final combined = TtsChunkProcessor.combineAudioBytes(allChunks);
       widget.project.ttsAudioPath = '${widget.project.id}_tts.wav';
-      widget.project.ttsAudioBytes = audioBytes;
+      widget.project.ttsAudioBytes = combined;
       widget.provider.updateProject(widget.project);
-      widget.provider.addNotification('🎙️ "${widget.project.title}" TTS 음성 생성 완료');
+      widget.provider.addNotification('🎙️ "${widget.project.title}" TTS 음성 생성 완료 (장면별 싱크 완료)');
 
+      final totalSecs = scenes.fold<double>(0.0, (s, e) => s + e.duration);
+      final m = totalSecs ~/ 60;
+      final s = (totalSecs % 60).toInt();
       setState(() {
         _isGenerating = false;
-        _statusMsg = '✅ TTS 생성 완료! (${(audioBytes.length / 1024).toStringAsFixed(0)}KB)';
+        _statusMsg = '✅ TTS 생성 완료! 총 ${m}분 ${s}초 | ${scenes.length}개 장면 | ${(combined.length / 1024).toStringAsFixed(0)}KB';
       });
-      _showSnack('음성 생성이 완료되었습니다! ${(audioBytes.length / 1024).toStringAsFixed(0)}KB');
+      _showSnack('✅ TTS 완료! 총 ${m}분 ${s}초 (장면별 duration 자동 설정)');
     } catch (e) {
       final errStr = e.toString().replaceAll('Exception: ', '');
       setState(() {
