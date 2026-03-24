@@ -785,12 +785,23 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     final sceneCount = scenes.length;
     final args = <String>['-y']; // 덮어쓰기 허용
 
+    // ── 공통 장면 필터 생성 (따옴표 없는 안전한 버전) ──
+    // zoompan은 Windows Process.start()에서 작은따옴표 파싱 오류 유발
+    // → scale+pad 방식으로 대체 (빠르고 안정적)
+    // inputIdx → 출력 레이블은 sceneIndex(i) 기준으로 명확히 분리
+    // [sv{i}] = 장면i의 비디오 출력, [sa{i}] = 장면i의 오디오 출력
+    String makeVideoFilter(int inputIdx, int sceneIdx) {
+      return '[$inputIdx:v]format=yuv420p,'
+          'scale=1920:1080:force_original_aspect_ratio=decrease,'
+          'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[sv$sceneIdx]';
+    }
+
     if (hasPerSceneTts) {
-      // 장면별 이미지 + TTS 입력
+      // 장면별 이미지 + TTS 1:1 입력
       for (int i = 0; i < sceneCount; i++) {
         final scene = scenes[i];
         final dur = scene.duration.toStringAsFixed(3);
-        final imgPath = '$scenesDir\\scene_${i + 1}.jpg';
+        final imgPath = '$scenesDir${Platform.pathSeparator}scene_${i + 1}.jpg';
         final hasImg = scene.imageBytes != null && File(imgPath).existsSync();
         if (hasImg) {
           args.addAll(['-loop', '1', '-t', dur, '-i', imgPath]);
@@ -798,33 +809,32 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           args.addAll(['-f', 'lavfi', '-t', dur, '-i', 'color=black:s=1920x1080:r=25']);
         }
         if (scene.sceneTtsBytes != null) {
-          args.addAll(['-i', '$scenesDir\\scene_${i + 1}_tts.wav']);
+          args.addAll(['-i', '$scenesDir${Platform.pathSeparator}scene_${i + 1}_tts.wav']);
         }
       }
-      // filter_complex 구성
+      // filter_complex: 비디오 scale+pad, 오디오 concat
       final filterParts = StringBuffer();
       final vidConcat = StringBuffer();
       final audConcat = StringBuffer();
       int inputIdx = 0;
       for (int i = 0; i < sceneCount; i++) {
         final scene = scenes[i];
-        final d = (scene.duration * 25).toInt();
         final vidIdx = inputIdx++;
         final audIdx = scene.sceneTtsBytes != null ? inputIdx++ : -1;
-        filterParts.write('[$vidIdx:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,'
-            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,'
-            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[sv$i];");
+        // ✅ 수정: sceneIdx(i) 기준으로 출력 레이블 [sv{i}] 생성 → vidConcat과 일치
+        filterParts.write(makeVideoFilter(vidIdx, i));
+        filterParts.write(';');
         vidConcat.write('[sv$i]');
         if (audIdx >= 0) {
           audConcat.write('[$audIdx:a]');
         } else {
-          filterParts.write('aevalsrc=0:d=${scene.duration.toStringAsFixed(3)}[sa$i];');
+          // TTS 없는 장면: 묵음 삽입
+          filterParts.write('aevalsrc=0:d=${scene.duration.toStringAsFixed(3)},aformat=sample_rates=24000:channel_layouts=mono[sa$i];');
           audConcat.write('[sa$i]');
         }
       }
       filterParts.write('${vidConcat}concat=n=$sceneCount:v=1:a=0[vid];');
-      filterParts.write('${audConcat}concat=n=$sceneCount:v=0:a=1[aud];');
-      filterParts.write('[vid][aud]');
+      filterParts.write('${audConcat}concat=n=$sceneCount:v=0:a=1[aud]');
       args.addAll(['-filter_complex', filterParts.toString()]);
       args.addAll(['-map', '[vid]', '-map', '[aud]']);
     } else if (ttsFilePath.isNotEmpty) {
@@ -832,7 +842,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       for (int i = 0; i < sceneCount; i++) {
         final scene = scenes[i];
         final dur = scene.duration.toStringAsFixed(3);
-        final imgPath = '$scenesDir\\scene_${i + 1}.jpg';
+        final imgPath = '$scenesDir${Platform.pathSeparator}scene_${i + 1}.jpg';
         final hasImg = scene.imageBytes != null && File(imgPath).existsSync();
         if (hasImg) {
           args.addAll(['-loop', '1', '-t', dur, '-i', imgPath]);
@@ -841,13 +851,9 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         }
       }
       args.addAll(['-i', ttsFilePath]);
-      final perScene = List.generate(sceneCount, (i) {
-        final d = (scenes[i].duration * 25).toInt();
-        return "[$i:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,"
-            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
-            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[v$i]";
-      }).join(';');
-      final concatIn = List.generate(sceneCount, (i) => '[v$i]').join('');
+      // ✅ 수정: makeVideoFilter(inputIdx, sceneIdx) 시그니처 맞춤
+      final perScene = List.generate(sceneCount, (i) => makeVideoFilter(i, i)).join(';');
+      final concatIn = List.generate(sceneCount, (i) => '[sv$i]').join('');
       final filterStr = '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]';
       args.addAll(['-filter_complex', filterStr]);
       args.addAll(['-map', '[vid]', '-map', '${sceneCount}:a']);
@@ -856,7 +862,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       for (int i = 0; i < sceneCount; i++) {
         final scene = scenes[i];
         final dur = scene.duration.toStringAsFixed(3);
-        final imgPath = '$scenesDir\\scene_${i + 1}.jpg';
+        final imgPath = '$scenesDir${Platform.pathSeparator}scene_${i + 1}.jpg';
         final hasImg = scene.imageBytes != null && File(imgPath).existsSync();
         if (hasImg) {
           args.addAll(['-loop', '1', '-t', dur, '-i', imgPath]);
@@ -864,13 +870,9 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           args.addAll(['-f', 'lavfi', '-t', dur, '-i', 'color=black:s=1920x1080:r=25']);
         }
       }
-      final perScene = List.generate(sceneCount, (i) {
-        final d = (scenes[i].duration * 25).toInt();
-        return "[$i:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,"
-            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
-            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[v$i]";
-      }).join(';');
-      final concatIn = List.generate(sceneCount, (i) => '[v$i]').join('');
+      // ✅ 수정: makeVideoFilter(inputIdx, sceneIdx) 시그니처 맞춤
+      final perScene = List.generate(sceneCount, (i) => makeVideoFilter(i, i)).join(';');
+      final concatIn = List.generate(sceneCount, (i) => '[sv$i]').join('');
       args.addAll(['-filter_complex', '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]']);
       args.addAll(['-map', '[vid]']);
     }

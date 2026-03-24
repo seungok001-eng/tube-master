@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -3092,78 +3093,104 @@ class _TtsTabState extends State<_TtsTab>
     setState(() {
       _isGenerating = true;
       _isCancelled = false;
-      _statusMsg = 'TTS 생성 준비 중...';
+      _statusMsg = 'TTS 병렬 생성 준비 중...';
     });
 
     final scenes = widget.project.scenes;
+    final totalCount = scenes.length;
 
     try {
-      // ── 장면별 개별 TTS 생성 ──
-      // 각 장면 대본 → 개별 TTS → scene.sceneTtsBytes + scene.duration 자동 계산
-      final allChunks = <Uint8List>[];
+      // ── 병렬 TTS 생성 ──
+      // 동시 요청 수 제한: Gemini 3개, ElevenLabs 2개, Clova 2개
+      final maxConcurrent = _engine == TtsEngine.gemini ? 3 : 2;
 
-      for (int i = 0; i < scenes.length; i++) {
-        if (_isCancelled) break;
+      // 완료된 장면 수 추적 (UI 업데이트용)
+      int completedCount = 0;
+
+      // 결과 저장 (순서 보장)
+      final resultBytes = List<Uint8List?>.filled(totalCount, null);
+
+      // 세마포어 역할: 동시 실행 중인 Future 수 제한
+      final semaphore = _Semaphore(maxConcurrent);
+
+      setState(() => _statusMsg = '⚡ $totalCount개 장면 병렬 TTS 생성 중... (동시 $maxConcurrent개)');
+
+      // 각 장면에 대한 Future 생성
+      final futures = List.generate(totalCount, (i) async {
+        if (_isCancelled) return;
         final scene = scenes[i];
         final text = scene.scriptText.trim();
+
         if (text.isEmpty) {
-          // 빈 장면: 0.5초 묵음
           scene.duration = 0.5;
-          continue;
+          completedCount++;
+          if (mounted) setState(() => _statusMsg = '⚡ [$completedCount/$totalCount] 장면 ${i + 1} 건너뜀 (빈 텍스트)');
+          return;
         }
 
-        setState(() => _statusMsg = '[${i + 1}/${scenes.length}] 장면 ${i + 1} TTS 생성 중...');
+        await semaphore.acquire();
+        try {
+          if (_isCancelled) return;
 
-        Uint8List sceneBytes;
-        switch (_engine) {
-          case TtsEngine.gemini:
-            final chunks = TtsChunkProcessor.splitTextIntoChunks(text, chunkSize: 2000);
-            final chunkBytes = <Uint8List>[];
-            for (int c = 0; c < chunks.length; c++) {
-              if (_isCancelled) break;
-              setState(() => _statusMsg = '[${i + 1}/${scenes.length}] 장면 ${i + 1} TTS 생성 중... (청크 ${c + 1}/${chunks.length})');
-              final b = await GeminiService(apiKey).generateTts(
-                text: chunks[c],
-                voiceName: _selectedGeminiVoice,
-                speakingRate: _speed,
+          Uint8List sceneBytes;
+          switch (_engine) {
+            case TtsEngine.gemini:
+              final chunks = TtsChunkProcessor.splitTextIntoChunks(text, chunkSize: 2000);
+              final chunkBytes = <Uint8List>[];
+              for (int c = 0; c < chunks.length; c++) {
+                if (_isCancelled) break;
+                final b = await GeminiService(apiKey).generateTts(
+                  text: chunks[c],
+                  voiceName: _selectedGeminiVoice,
+                  speakingRate: _speed,
+                );
+                chunkBytes.add(b);
+              }
+              sceneBytes = TtsChunkProcessor.combineAudioBytes(chunkBytes);
+              break;
+
+            case TtsEngine.elevenlabs:
+              final truncated = text.length > 5000 ? text.substring(0, 5000) : text;
+              sceneBytes = await ElevenLabsService(apiKey).generateTts(
+                text: truncated,
+                voiceId: _elevenLabsVoiceId.isNotEmpty ? _elevenLabsVoiceId : '21m00Tcm4TlvDq8ikWAM',
+                speed: _speed,
               );
-              chunkBytes.add(b);
-            }
-            sceneBytes = TtsChunkProcessor.combineAudioBytes(chunkBytes);
-            break;
+              break;
 
-          case TtsEngine.elevenlabs:
-            final truncated = text.length > 5000 ? text.substring(0, 5000) : text;
-            sceneBytes = await ElevenLabsService(apiKey).generateTts(
-              text: truncated,
-              voiceId: _elevenLabsVoiceId.isNotEmpty ? _elevenLabsVoiceId : '21m00Tcm4TlvDq8ikWAM',
-              speed: _speed,
-            );
-            break;
+            case TtsEngine.clova:
+              final clovaKeys = widget.provider.apiKeys;
+              sceneBytes = await ClovaTtsService(
+                clientId: clovaKeys.clovaApiKey,
+                clientSecret: clovaKeys.clovaApiSecret,
+              ).generateTts(
+                text: text,
+                speaker: _clovaVoiceId,
+                speed: (_speed * 2 - 2).round().clamp(-5, 5),
+              );
+              break;
 
-          case TtsEngine.clova:
-            final clovaKeys = widget.provider.apiKeys;
-            sceneBytes = await ClovaTtsService(
-              clientId: clovaKeys.clovaApiKey,
-              clientSecret: clovaKeys.clovaApiSecret,
-            ).generateTts(
-              text: text,
-              speaker: _clovaVoiceId,
-              speed: (_speed * 2 - 2).round().clamp(-5, 5),
-            );
-            break;
+            default:
+              return;
+          }
 
-          default:
-            continue;
+          // 결과 저장 (인덱스 순서 보장)
+          resultBytes[i] = sceneBytes;
+          scene.sceneTtsBytes = sceneBytes;
+          scene.duration = _calcTtsDuration(sceneBytes).clamp(0.5, 300.0);
+
+          completedCount++;
+          if (mounted) {
+            setState(() => _statusMsg =
+                '⚡ [$completedCount/$totalCount] 장면 ${i + 1} 완료 (${scene.duration.toStringAsFixed(1)}초)');
+          }
+        } finally {
+          semaphore.release();
         }
+      });
 
-        // 장면별 TTS 저장 + duration 자동 계산
-        scene.sceneTtsBytes = sceneBytes;
-        scene.duration = _calcTtsDuration(sceneBytes).clamp(0.5, 300.0);
-        allChunks.add(sceneBytes);
-
-        setState(() => _statusMsg = '[${i + 1}/${scenes.length}] 장면 ${i + 1} 완료 (${scene.duration.toStringAsFixed(1)}초)');
-      }
+      // 모든 Future 동시 실행 대기
+      await Future.wait(futures);
 
       if (_isCancelled) {
         setState(() {
@@ -3173,21 +3200,22 @@ class _TtsTabState extends State<_TtsTab>
         return;
       }
 
-      // 전체 합본 오디오 생성 (재생/다운로드용)
-      final combined = TtsChunkProcessor.combineAudioBytes(allChunks);
+      // 전체 합본 오디오 생성 (재생/다운로드용) - 순서 보장된 결과 사용
+      final validBytes = resultBytes.whereType<Uint8List>().toList();
+      final combined = TtsChunkProcessor.combineAudioBytes(validBytes);
       widget.project.ttsAudioPath = '${widget.project.id}_tts.wav';
       widget.project.ttsAudioBytes = combined;
       widget.provider.updateProject(widget.project);
-      widget.provider.addNotification('🎙️ "${widget.project.title}" TTS 음성 생성 완료 (장면별 싱크 완료)');
+      widget.provider.addNotification('🎙️ "${widget.project.title}" TTS 음성 생성 완료 (병렬 생성)');
 
       final totalSecs = scenes.fold<double>(0.0, (s, e) => s + e.duration);
       final m = totalSecs ~/ 60;
       final s = (totalSecs % 60).toInt();
       setState(() {
         _isGenerating = false;
-        _statusMsg = '✅ TTS 생성 완료! 총 ${m}분 ${s}초 | ${scenes.length}개 장면 | ${(combined.length / 1024).toStringAsFixed(0)}KB';
+        _statusMsg = '✅ TTS 병렬 생성 완료! 총 ${m}분 ${s}초 | ${scenes.length}개 장면 | ${(combined.length / 1024).toStringAsFixed(0)}KB';
       });
-      _showSnack('✅ TTS 완료! 총 ${m}분 ${s}초 (장면별 duration 자동 설정)');
+      _showSnack('✅ TTS 완료! 총 ${m}분 ${s}초 (병렬 생성 완료)');
     } catch (e) {
       final errStr = e.toString().replaceAll('Exception: ', '');
       setState(() {
@@ -5349,5 +5377,35 @@ class _AudioPlayerState extends State<_AudioPlayer>
         ],
       ),
     );
+  }
+}
+
+// ── 세마포어: 동시 실행 Future 수 제한 ──
+class _Semaphore {
+  final int maxConcurrent;
+  int _current = 0;
+  final _queue = <void Function()>[];
+
+  _Semaphore(this.maxConcurrent);
+
+  Future<void> acquire() async {
+    if (_current < maxConcurrent) {
+      _current++;
+      return;
+    }
+    final completer = Completer<void>();
+    _queue.add(() {
+      _current++;
+      completer.complete();
+    });
+    await completer.future;
+  }
+
+  void release() {
+    _current--;
+    if (_queue.isNotEmpty) {
+      final next = _queue.removeAt(0);
+      next();
+    }
   }
 }
