@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../providers/app_provider.dart';
 import '../models/project_model.dart';
@@ -807,9 +809,51 @@ ${_includeIntro ? """[인트로 추가]
           fileName: filename, mimeType: 'application/zip');
       _showSnack('$filename 다운로드 시작! 브라우저 다운로드 폴더를 확인하세요.');
     } else {
-      final b64 = base64Encode(zipBytes);
-      final dataUri = 'data:application/zip;base64,$b64';
-      launchUrl(Uri.parse(dataUri));
+      // Windows/Desktop: FilePicker로 저장 경로 선택
+      _saveZipDesktop(zipBytes, filename);
+    }
+  }
+
+  Future<void> _saveZipDesktop(Uint8List zipBytes, String filename) async {
+    try {
+      // FilePicker로 저장 경로 선택
+      final result = await FilePicker.platform.saveFile(
+        dialogTitle: 'ZIP 파일 저장 위치 선택',
+        fileName: filename,
+        allowedExtensions: ['zip'],
+        type: FileType.custom,
+      );
+
+      if (result != null) {
+        // 선택한 경로에 파일 저장
+        final file = File(result);
+        await file.writeAsBytes(zipBytes);
+        _showSnack('✅ 저장 완료!\n경로: $result');
+
+        // 저장된 폴더 열기 (Windows 탐색기)
+        final folder = File(result).parent.path;
+        await launchUrl(Uri.parse('file:///$folder'));
+      } else {
+        // 사용자가 취소 → 대안으로 Documents에 자동 저장
+        final docs = await getApplicationDocumentsDirectory();
+        final savePath = '${docs.path}\\$filename';
+        await File(savePath).writeAsBytes(zipBytes);
+        _showSnack('💾 저장됨: $savePath\n(내 문서 폴더)');
+
+        // 저장된 폴더 열기
+        await launchUrl(Uri.parse('file:///${docs.path}'));
+      }
+    } catch (e) {
+      // FilePicker 실패 시 Documents 폴더에 자동 저장
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        final savePath = '${docs.path}\\$filename';
+        await File(savePath).writeAsBytes(zipBytes);
+        _showSnack('💾 저장됨: $savePath\n(내 문서 폴더에 자동 저장)');
+        await launchUrl(Uri.parse('file:///${docs.path}'));
+      } catch (e2) {
+        _showSnack('❌ 저장 실패: $e2');
+      }
     }
   }
 
