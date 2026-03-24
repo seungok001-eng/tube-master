@@ -218,6 +218,13 @@ class _RenderingTabState extends State<_RenderingTab> {
   bool _includeWatermark = false;
   bool _includeRandomEffect = false; // 랜덤 카메라 효과
 
+  // ── 직접 렌더링 (FFmpeg) ──
+  String _ffmpegPath = '';        // 감지된 FFmpeg 경로
+  bool _ffmpegFound = false;      // FFmpeg 존재 여부
+  bool _isDirectRender = true;    // true=MP4 직접 생성, false=ZIP 패키지
+  String _directRenderStatus = ''; // 직접 렌더링 상태 메시지
+  String _lastOutputMp4 = '';     // 최종 저장된 MP4 경로
+
   // 자막 설정
   double _subtitleFontSize = 24.0;
   String _subtitleFont = 'NanumGothic';
@@ -558,6 +565,329 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     }
   }
 
+  @override
+  void initState() {
+    super.initState();
+    // 앱 시작 시 FFmpeg 자동 감지
+    if (!kIsWeb && Platform.isWindows) {
+      _detectFfmpeg();
+    }
+  }
+
+  // ── FFmpeg 자동 감지 ──
+  Future<void> _detectFfmpeg() async {
+    // 우선순위 경로 목록
+    final candidates = [
+      'ffmpeg', // PATH에 등록된 경우
+      r'C:\ffmpeg\bin\ffmpeg.exe',
+      r'C:\ffmpeg\ffmpeg.exe',
+      r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+      r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
+    ];
+    for (final path in candidates) {
+      try {
+        final result = await Process.run(path, ['-version']);
+        if (result.exitCode == 0) {
+          if (mounted) {
+            setState(() {
+              _ffmpegPath = path;
+              _ffmpegFound = true;
+            });
+          }
+          return;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _ffmpegFound = false;
+        _ffmpegPath = '';
+      });
+    }
+  }
+
+  // ── MP4 직접 렌더링 (FFmpeg 사용) ──
+  Future<void> _startDirectRender() async {
+    if (widget.project.scenes.isEmpty) {
+      _showSnack('장면이 없습니다. 먼저 미디어를 생성해주세요.');
+      return;
+    }
+    if (!_ffmpegFound) {
+      _showSnack('FFmpeg를 찾을 수 없습니다. ZIP 패키지 방식을 사용하세요.');
+      return;
+    }
+
+    // 저장 경로 선택
+    final safe = widget.project.title.replaceAll(RegExp(r'[^\w가-힣]'), '_');
+    final outputPath = await FilePicker.platform.saveFile(
+      dialogTitle: 'MP4 저장 위치 선택',
+      fileName: '${safe}_final.mp4',
+      type: FileType.custom,
+      allowedExtensions: ['mp4'],
+    );
+    if (outputPath == null) return; // 취소
+
+    setState(() {
+      _isRendering = true;
+      _isDirectRender = true;
+      _renderProgress = 0.0;
+      _renderLog = '🎬 MP4 직접 렌더링 시작...\n';
+      _directRenderStatus = '준비 중...';
+      _lastOutputMp4 = '';
+    });
+
+    // 임시 작업 디렉토리 생성
+    final tempDir = await Directory.systemTemp.createTemp('tubemaster_render_');
+    try {
+      final scenes = widget.project.scenes;
+      final hasPerSceneTts = _hasPerSceneTts;
+      final hasTts = widget.project.ttsAudioBytes != null;
+
+      // ── duration 계산 ──
+      if (hasPerSceneTts) {
+        int syncedCount = 0;
+        for (final scene in scenes) {
+          if (scene.sceneTtsBytes != null) {
+            scene.duration = _calcAudioDuration(scene.sceneTtsBytes!).clamp(0.5, 300.0);
+            syncedCount++;
+          }
+        }
+        final totalSynced = scenes.fold<double>(0.0, (s, e) => s + e.duration);
+        final m = totalSynced ~/ 60;
+        final s = (totalSynced % 60).toInt();
+        setState(() => _renderLog += '[싱크] 장면별 TTS 적용: $syncedCount개 장면 → 총 ${m}분 ${s}초\n');
+      } else if (hasTts) {
+        final ttsBytes = widget.project.ttsAudioBytes!;
+        final ttsTotalSecs = _calcAudioDuration(ttsBytes);
+        final perScene = (ttsTotalSecs / scenes.length).clamp(1.0, 120.0);
+        for (final s in scenes) { s.duration = perScene; }
+        setState(() => _renderLog += '[싱크] 합본 TTS 균등 분배: 장면당 ${perScene.toStringAsFixed(1)}초\n');
+      }
+
+      // ── 이미지 파일 저장 ──
+      setState(() { _renderProgress = 0.1; _renderLog += '[1/5] 이미지 파일 준비 중...\n'; });
+      final scenesDir = Directory('${tempDir.path}\\scenes');
+      await scenesDir.create();
+      for (int i = 0; i < scenes.length; i++) {
+        final scene = scenes[i];
+        if (scene.imageBytes != null) {
+          await File('${scenesDir.path}\\scene_${i + 1}.jpg').writeAsBytes(scene.imageBytes!);
+        }
+        // 장면별 TTS 저장
+        if (scene.sceneTtsBytes != null) {
+          final wavBytes = WebAudioHelper.isWav(scene.sceneTtsBytes!)
+              ? scene.sceneTtsBytes!
+              : WebAudioHelper.pcmToWav(scene.sceneTtsBytes!, sampleRate: 24000);
+          await File('${scenesDir.path}\\scene_${i + 1}_tts.wav').writeAsBytes(wavBytes);
+        }
+        if (i % 3 == 0) {
+          setState(() => _renderProgress = 0.1 + (i / scenes.length) * 0.15);
+          await Future.delayed(const Duration(milliseconds: 30));
+        }
+      }
+
+      // ── 합본 TTS 저장 (장면별 TTS 없을 때) ──
+      String ttsFilePath = '';
+      if (!hasPerSceneTts && hasTts) {
+        final ttsBytes = widget.project.ttsAudioBytes!;
+        final wavBytes = WebAudioHelper.isWav(ttsBytes)
+            ? ttsBytes : WebAudioHelper.pcmToWav(ttsBytes, sampleRate: 24000);
+        ttsFilePath = '${tempDir.path}\\${safe}_tts.wav';
+        await File(ttsFilePath).writeAsBytes(wavBytes);
+      }
+
+      // ── FFmpeg 명령 구성 ──
+      setState(() { _renderProgress = 0.3; _renderLog += '[2/5] FFmpeg 명령 구성 중...\n'; });
+      final ffmpegArgs = _buildFfmpegArgs(
+        tempDir.path, scenesDir.path, outputPath,
+        hasPerSceneTts: hasPerSceneTts, ttsFilePath: ttsFilePath,
+      );
+      setState(() => _renderLog += '[FFmpeg] ${_ffmpegPath} ${ffmpegArgs.take(5).join(" ")} ...\n');
+
+      // ── FFmpeg 실행 ──
+      setState(() { _renderProgress = 0.35; _renderLog += '[3/5] FFmpeg 렌더링 중... (시간이 걸립니다)\n'; });
+      final process = await Process.start(_ffmpegPath, ffmpegArgs, workingDirectory: tempDir.path);
+
+      // stderr에서 진행률 파싱 (FFmpeg는 stderr로 출력)
+      final totalDur = scenes.fold<double>(0.0, (s, e) => s + e.duration);
+      process.stderr.transform(const SystemEncoding().decoder).listen((data) {
+        // time=HH:MM:SS.ss 파싱
+        final timeMatch = RegExp(r'time=(\d+):(\d+):(\d+\.\d+)').firstMatch(data);
+        if (timeMatch != null && mounted) {
+          final h = int.parse(timeMatch.group(1)!);
+          final m = int.parse(timeMatch.group(2)!);
+          final s = double.parse(timeMatch.group(3)!);
+          final currentSecs = h * 3600 + m * 60 + s;
+          final progress = totalDur > 0 ? (currentSecs / totalDur).clamp(0.0, 0.99) : 0.5;
+          final timeStr = '${m.toString().padLeft(2,'0')}:${s.toInt().toString().padLeft(2,'0')}';
+          setState(() {
+            _renderProgress = 0.35 + progress * 0.6;
+            _directRenderStatus = '처리 중: $timeStr / ${_fmtSecs(totalDur.toInt())}  (${(progress * 100).toInt()}%)';
+          });
+        }
+      });
+
+      final exitCode = await process.exitCode;
+      if (exitCode != 0) {
+        throw Exception('FFmpeg 실패 (exit code: $exitCode)\n렌더링 로그를 확인하세요.');
+      }
+
+      // ── 완료 ──
+      setState(() {
+        _renderProgress = 1.0;
+        _renderLog += '[5/5] ✅ 렌더링 완료!\n저장 위치: $outputPath\n';
+        _directRenderStatus = '✅ 완료! MP4 저장됨';
+        _lastOutputMp4 = outputPath;
+        _isRendering = false;
+      });
+
+      widget.project.status = ProjectStatus.rendered;
+      widget.project.finalVideoPath = outputPath;
+      widget.provider.updateProject(widget.project);
+      widget.provider.addNotification('🎬 "${widget.project.title}" MP4 렌더링 완료: $outputPath');
+
+      if (mounted) {
+        _showSnack('✅ MP4 저장 완료! 파일 탐색기로 열기?');
+        // 저장 폴더 열기
+        final folder = File(outputPath).parent.path;
+        await launchUrl(Uri.parse('file:///$folder'));
+      }
+
+    } catch (e) {
+      setState(() {
+        _isRendering = false;
+        _renderLog += '❌ 오류: $e\n';
+        _directRenderStatus = '❌ 실패: $e';
+      });
+      _showSnack('렌더링 실패: $e');
+    } finally {
+      // 임시 폴더 정리
+      try { await tempDir.delete(recursive: true); } catch (_) {}
+    }
+  }
+
+  // HH:MM:SS 포맷
+  String _fmtSecs(int totalSecs) {
+    final m = totalSecs ~/ 60;
+    final s = totalSecs % 60;
+    return '${m.toString().padLeft(2,'0')}:${s.toString().padLeft(2,'0')}';
+  }
+
+  // FFmpeg 인수 리스트 생성 (직접 렌더링용)
+  List<String> _buildFfmpegArgs(
+    String workDir, String scenesDir, String outputPath, {
+    required bool hasPerSceneTts,
+    required String ttsFilePath,
+  }) {
+    final scenes = widget.project.scenes;
+    final sceneCount = scenes.length;
+    final args = <String>['-y']; // 덮어쓰기 허용
+
+    if (hasPerSceneTts) {
+      // 장면별 이미지 + TTS 입력
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = scenes[i];
+        final dur = scene.duration.toStringAsFixed(3);
+        final imgPath = '$scenesDir\\scene_${i + 1}.jpg';
+        final hasImg = scene.imageBytes != null && File(imgPath).existsSync();
+        if (hasImg) {
+          args.addAll(['-loop', '1', '-t', dur, '-i', imgPath]);
+        } else {
+          args.addAll(['-f', 'lavfi', '-t', dur, '-i', 'color=black:s=1920x1080:r=25']);
+        }
+        if (scene.sceneTtsBytes != null) {
+          args.addAll(['-i', '$scenesDir\\scene_${i + 1}_tts.wav']);
+        }
+      }
+      // filter_complex 구성
+      final filterParts = StringBuffer();
+      final vidConcat = StringBuffer();
+      final audConcat = StringBuffer();
+      int inputIdx = 0;
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = scenes[i];
+        final d = (scene.duration * 25).toInt();
+        final vidIdx = inputIdx++;
+        final audIdx = scene.sceneTtsBytes != null ? inputIdx++ : -1;
+        filterParts.write('[$vidIdx:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,'
+            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[sv$i];");
+        vidConcat.write('[sv$i]');
+        if (audIdx >= 0) {
+          audConcat.write('[$audIdx:a]');
+        } else {
+          filterParts.write('aevalsrc=0:d=${scene.duration.toStringAsFixed(3)}[sa$i];');
+          audConcat.write('[sa$i]');
+        }
+      }
+      filterParts.write('${vidConcat}concat=n=$sceneCount:v=1:a=0[vid];');
+      filterParts.write('${audConcat}concat=n=$sceneCount:v=0:a=1[aud];');
+      filterParts.write('[vid][aud]');
+      args.addAll(['-filter_complex', filterParts.toString()]);
+      args.addAll(['-map', '[vid]', '-map', '[aud]']);
+    } else if (ttsFilePath.isNotEmpty) {
+      // 이미지들 + 합본 TTS
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = scenes[i];
+        final dur = scene.duration.toStringAsFixed(3);
+        final imgPath = '$scenesDir\\scene_${i + 1}.jpg';
+        final hasImg = scene.imageBytes != null && File(imgPath).existsSync();
+        if (hasImg) {
+          args.addAll(['-loop', '1', '-t', dur, '-i', imgPath]);
+        } else {
+          args.addAll(['-f', 'lavfi', '-t', dur, '-i', 'color=black:s=1920x1080:r=25']);
+        }
+      }
+      args.addAll(['-i', ttsFilePath]);
+      final perScene = List.generate(sceneCount, (i) {
+        final d = (scenes[i].duration * 25).toInt();
+        return "[$i:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,"
+            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
+            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[v$i]";
+      }).join(';');
+      final concatIn = List.generate(sceneCount, (i) => '[v$i]').join('');
+      final filterStr = '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]';
+      args.addAll(['-filter_complex', filterStr]);
+      args.addAll(['-map', '[vid]', '-map', '${sceneCount}:a']);
+    } else {
+      // TTS 없음 - 영상만
+      for (int i = 0; i < sceneCount; i++) {
+        final scene = scenes[i];
+        final dur = scene.duration.toStringAsFixed(3);
+        final imgPath = '$scenesDir\\scene_${i + 1}.jpg';
+        final hasImg = scene.imageBytes != null && File(imgPath).existsSync();
+        if (hasImg) {
+          args.addAll(['-loop', '1', '-t', dur, '-i', imgPath]);
+        } else {
+          args.addAll(['-f', 'lavfi', '-t', dur, '-i', 'color=black:s=1920x1080:r=25']);
+        }
+      }
+      final perScene = List.generate(sceneCount, (i) {
+        final d = (scenes[i].duration * 25).toInt();
+        return "[$i:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,"
+            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
+            "zoompan=z='min(zoom+0.0005,1.2)':d=$d:s=1920x1080,setsar=1[v$i]";
+      }).join(';');
+      final concatIn = List.generate(sceneCount, (i) => '[v$i]').join('');
+      args.addAll(['-filter_complex', '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]']);
+      args.addAll(['-map', '[vid]']);
+    }
+
+    // 공통 출력 옵션
+    args.addAll([
+      '-c:v', 'libx264',
+      '-preset', 'medium',
+      '-crf', '18',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-r', '25',
+      outputPath,
+    ]);
+    return args;
+  }
+
   // 오디오 바이트로 재생 시간(초) 계산
   double _calcAudioDuration(Uint8List bytes) {
     if (WebAudioHelper.isWav(bytes)) {
@@ -584,6 +914,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
 
     setState(() {
       _isRendering = true;
+      _isDirectRender = false;
       _renderProgress = 0.0;
       _renderLog = '📦 ZIP 패키지 생성 시작...\n';
     });
@@ -1351,27 +1682,144 @@ ${_includeIntro ? """[인트로 추가]
                   (v) => setState(() => _includeRandomEffect = v),
                 ),
                 const SizedBox(height: 20),
-                // 렌더링 버튼
+
+                // ── 렌더링 모드 선택 + 버튼 ──
+                // FFmpeg 상태 표시
+                if (!kIsWeb && Platform.isWindows) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: (_ffmpegFound ? AppTheme.success : AppTheme.warning).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: (_ffmpegFound ? AppTheme.success : AppTheme.warning).withValues(alpha: 0.4),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _ffmpegFound ? Icons.check_circle_rounded : Icons.warning_rounded,
+                          color: _ffmpegFound ? AppTheme.success : AppTheme.warning,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _ffmpegFound
+                                ? 'FFmpeg 감지됨: $_ffmpegPath'
+                                : 'FFmpeg 미감지 → ZIP 패키지 방식만 사용 가능',
+                            style: GoogleFonts.notoSansKr(
+                              color: _ffmpegFound ? AppTheme.success : AppTheme.warning,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                        if (!_ffmpegFound)
+                          TextButton(
+                            onPressed: _detectFfmpeg,
+                            child: Text('재감지',
+                                style: GoogleFonts.notoSansKr(
+                                    color: AppTheme.primary, fontSize: 11)),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+
+                // MP4 직접 렌더링 버튼 (FFmpeg 있을 때)
+                if (!kIsWeb && Platform.isWindows && _ffmpegFound) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _isRendering ? null : _startDirectRender,
+                      icon: _isRendering && _isDirectRender
+                          ? const SizedBox(
+                              width: 16, height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.movie_creation_rounded, size: 22),
+                      label: Text(
+                        (_isRendering && _isDirectRender) ? '🎬 MP4 렌더링 중...' : '🎬 MP4 직접 렌더링 (추천)',
+                        style: GoogleFonts.notoSansKr(fontSize: 15, fontWeight: FontWeight.bold),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00C896),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  // 직접 렌더링 상태 메시지
+                  if (_isRendering || _directRenderStatus.isNotEmpty)
+                    Text(
+                      _directRenderStatus.isNotEmpty ? _directRenderStatus : '준비 중...',
+                      style: GoogleFonts.notoSansKr(
+                        color: _directRenderStatus.startsWith('✅')
+                            ? AppTheme.success
+                            : _directRenderStatus.startsWith('❌')
+                                ? AppTheme.error
+                                : AppTheme.textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  const SizedBox(height: 6),
+                  // 완료 후 폴더 열기 버튼
+                  if (_lastOutputMp4.isNotEmpty) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final folder = File(_lastOutputMp4).parent.path;
+                          await launchUrl(Uri.parse('file:///$folder'));
+                        },
+                        icon: const Icon(Icons.folder_open_rounded, size: 16),
+                        label: Text('📂 저장 폴더 열기',
+                            style: GoogleFonts.notoSansKr(fontSize: 13)),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppTheme.success,
+                          side: BorderSide(color: AppTheme.success.withValues(alpha: 0.5)),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(_lastOutputMp4,
+                        style: GoogleFonts.sourceCodePro(
+                            color: AppTheme.textHint, fontSize: 10)),
+                    const SizedBox(height: 8),
+                  ],
+                  Divider(color: AppTheme.border, height: 24),
+                ],
+
+                // ZIP 패키지 버튼 (항상 표시)
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     onPressed: _isRendering ? null : _startRendering,
-                    icon: _isRendering
+                    icon: _isRendering && !_isDirectRender
                         ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.play_arrow_rounded, size: 22),
-                    label: Text(_isRendering ? '렌더링 중...' : '🎬 렌더링 시작',
-                        style: GoogleFonts.notoSansKr(
-                            fontSize: 15, fontWeight: FontWeight.bold)),
+                            width: 16, height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.folder_zip_rounded, size: 22),
+                    label: Text(
+                      (_isRendering && !_isDirectRender) ? 'ZIP 생성 중...' : '📦 ZIP 패키지 생성',
+                      style: GoogleFonts.notoSansKr(fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primary,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      backgroundColor: AppTheme.bgElevated,
+                      foregroundColor: AppTheme.textSecondary,
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      side: BorderSide(color: AppTheme.border),
                     ),
                   ),
                 ),
+                const SizedBox(height: 4),
+                Text('ZIP 압축 → render.bat 실행 방식 (FFmpeg 없어도 사용 가능)',
+                    style: GoogleFonts.notoSansKr(
+                        color: AppTheme.textHint, fontSize: 10)),
+
+                // 진행률 바 (렌더링 중)
                 if (_isRendering) ...[
                   const SizedBox(height: 12),
                   LinearProgressIndicator(
@@ -1386,7 +1834,7 @@ ${_includeIntro ? """[인트로 추가]
                       style: GoogleFonts.notoSansKr(
                           color: AppTheme.textSecondary, fontSize: 12)),
                 ],
-                if (widget.project.status == ProjectStatus.rendered) ...[
+                if (widget.project.status == ProjectStatus.rendered && _lastOutputMp4.isEmpty) ...[
                   const SizedBox(height: 16),
                   Container(
                     padding: const EdgeInsets.all(12),
