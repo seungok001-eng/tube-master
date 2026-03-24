@@ -10,6 +10,8 @@ enum ScriptAiModel {
   gemini3Flash,
   gemini31FlashImage,
   gemini3ProImage,
+  // Gemini 3.1 계열
+  gemini31Pro,
   // Claude 계열
   claude35Sonnet,
   claude4Sonnet,
@@ -24,6 +26,7 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.gemini3Flash: return 'Gemini 3.0 Flash (최신 🚀)';
       case ScriptAiModel.gemini31FlashImage: return 'Gemini 3.1 Flash-Image (이미지 특화)';
       case ScriptAiModel.gemini3ProImage: return 'Gemini 3 Pro Image (최고급 이미지)';
+      case ScriptAiModel.gemini31Pro: return 'Gemini 3.1 Pro (최고지능 🧠)';
       case ScriptAiModel.claude35Sonnet: return 'Claude 3.5 Sonnet';
       case ScriptAiModel.claude4Sonnet: return 'Claude 3.7 Sonnet (최신)';
     }
@@ -37,6 +40,7 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.gemini3Flash: return 'gemini-3-flash-preview';
       case ScriptAiModel.gemini31FlashImage: return 'gemini-3.1-flash-image-preview';
       case ScriptAiModel.gemini3ProImage: return 'gemini-3-pro-image-preview';
+      case ScriptAiModel.gemini31Pro: return 'gemini-3.1-pro-preview';
       case ScriptAiModel.claude35Sonnet: return 'claude-3-5-sonnet-20241022';
       case ScriptAiModel.claude4Sonnet: return 'claude-3-7-sonnet-20250219';
     }
@@ -52,7 +56,8 @@ extension ScriptAiModelExt on ScriptAiModel {
     if (isClaude) return 'Claude';
     if (this == ScriptAiModel.gemini3Flash ||
         this == ScriptAiModel.gemini31FlashImage ||
-        this == ScriptAiModel.gemini3ProImage) return 'Gemini 3.x';
+        this == ScriptAiModel.gemini3ProImage ||
+        this == ScriptAiModel.gemini31Pro) return 'Gemini 3.x';
     return 'Gemini 2.5';
   }
 }
