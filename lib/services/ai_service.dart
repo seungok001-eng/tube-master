@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
@@ -191,56 +192,67 @@ $styleGuide
     final chunks = <String>[];
     int offset = 0;
     while (offset < script.length) {
-      int end = offset + chunkSize;
+      int end = (offset + chunkSize).clamp(0, script.length);
       if (end < script.length) {
-        // 문장 끊김 방지: 가장 가까운 줄바꿈/마침표 위치에서 자르기
+        // 문장 끊김 방지: 마지막 줄바꿈/마침표 위치에서 자르기
         final cutPos = script.lastIndexOf(RegExp(r'[\n.!?]'), end);
         if (cutPos > offset + 1000) end = cutPos + 1;
-      } else {
-        end = script.length;
       }
-      chunks.add(script.substring(offset, end).trim());
+      final chunk = script.substring(offset, end).trim();
+      if (chunk.isNotEmpty) chunks.add(chunk);
       offset = end;
     }
 
-    // 2. 병렬 처리 (최대 4개 동시 요청)
-    const maxParallel = 4;
+    // 2. 병렬 처리 - _Semaphore 대신 직접 구현 (최대 4개 동시)
     final results = List<List<Map<String, String>>?>.filled(chunks.length, null);
-    int completed = 0;
+    final errors  = List<Object?>.filled(chunks.length, null);
+    int _running = 0;
+    final _lock = <Completer<void>>[];
 
-    // 세마포어 방식: 최대 maxParallel개 동시 실행
-    final semaphore = List<bool>.filled(maxParallel, false);
-    final futures = <Future<void>>[];
-
-    for (int i = 0; i < chunks.length; i++) {
-      final idx = i;
-      final future = Future<void>(() async {
-        // 슬롯 대기 (간단한 폴링 방식)
-        while (true) {
-          final slot = semaphore.indexOf(false);
-          if (slot >= 0) { semaphore[slot] = true; break; }
-          await Future.delayed(const Duration(milliseconds: 100));
-        }
-        try {
-          final response = await _callGeminiLarge(
-            systemPrompt: systemPrompt,
-            userMessage: '다음 대본을 장면으로 분할해주세요 (파트 ${idx + 1}/${chunks.length}):\n\n${chunks[idx]}',
-            model: 'gemini-3-flash-preview',  // 최신 모델 (2025.12)
-          );
-          results[idx] = _parseSceneJson(response);
-          completed++;
-        } finally {
-          final slot = semaphore.indexOf(true);
-          if (slot >= 0) semaphore[slot] = false;
-        }
-      });
-      futures.add(future);
+    Future<void> acquire() async {
+      if (_running < 4) { _running++; return; }
+      final c = Completer<void>();
+      _lock.add(c);
+      await c.future;
+      _running++;
     }
+
+    void release() {
+      _running--;
+      if (_lock.isNotEmpty) {
+        final c = _lock.removeAt(0);
+        c.complete();
+      }
+    }
+
+    final futures = List.generate(chunks.length, (idx) async {
+      await acquire();
+      try {
+        final response = await _callGeminiLarge(
+          systemPrompt: systemPrompt,
+          userMessage: '다음 대본을 장면으로 분할해주세요'
+              '${chunks.length > 1 ? " (파트 ${idx + 1}/${chunks.length})" : ""}:\n\n${chunks[idx]}',
+          model: 'gemini-3-flash-preview',
+        );
+        results[idx] = _parseSceneJson(response);
+      } catch (e) {
+        errors[idx] = e;  // ✅ 버그 수정: 에러 저장 (이전엔 무시됨)
+      } finally {
+        release();
+      }
+    });
 
     // 3. 모든 청크 완료 대기
     await Future.wait(futures);
 
-    // 4. 순서 보장하여 합치기
+    // 4. 에러 확인 - 하나라도 실패하면 예외 발생
+    for (int i = 0; i < errors.length; i++) {
+      if (errors[i] != null) {
+        throw Exception('파트 ${i + 1} 분할 실패: ${errors[i]}');
+      }
+    }
+
+    // 5. 순서 보장하여 합치기
     final allScenes = <Map<String, String>>[];
     for (final sceneList in results) {
       if (sceneList != null) allScenes.addAll(sceneList);
