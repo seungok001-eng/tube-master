@@ -203,14 +203,16 @@ $styleGuide
       offset = end;
     }
 
-    // 2. 병렬 처리 - _Semaphore 대신 직접 구현 (최대 4개 동시)
+    // 2. 병렬 처리 (동시 요청 수 자동 조정 - Rate Limit 대비)
+    // 청크 수가 적을수록 동시 요청 수를 줄여 무료 키에서도 안정적으로 동작
+    final maxParallel = chunks.length <= 2 ? 2 : 3;
     final results = List<List<Map<String, String>>?>.filled(chunks.length, null);
     final errors  = List<Object?>.filled(chunks.length, null);
     int _running = 0;
     final _lock = <Completer<void>>[];
 
     Future<void> acquire() async {
-      if (_running < 4) { _running++; return; }
+      if (_running < maxParallel) { _running++; return; }
       final c = Completer<void>();
       _lock.add(c);
       await c.future;
@@ -361,30 +363,41 @@ $styleGuide
       }
     });
 
-    final response = await http.post(
-      Uri.parse(url),
-      headers: {'Content-Type': 'application/json'},
-      body: body,
-    ).timeout(const Duration(minutes: 10));
+    // 429 Rate Limit 자동 재시도 (최대 3회, 지수 백오프)
+    const maxRetries = 3;
+    final retryDelays = [5, 15, 30]; // 초 단위
 
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      // finishReason 확인 (MAX_TOKENS이면 잘린 것)
-      final finishReason = data['candidates']?[0]?['finishReason'] ?? '';
-      final text = data['candidates'][0]['content']['parts'][0]['text'] ?? '';
-      if (finishReason == 'MAX_TOKENS') {
-        // 잘렸지만 복구 시도를 위해 그냥 반환 (파서에서 복구)
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+        body: body,
+      ).timeout(const Duration(minutes: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final text = data['candidates'][0]['content']['parts'][0]['text'] ?? '';
         return text;
+      } else if (response.statusCode == 429 && attempt < maxRetries) {
+        // Rate Limit → 대기 후 재시도
+        final waitSecs = retryDelays[attempt];
+        await Future.delayed(Duration(seconds: waitSecs));
+        continue;
+      } else {
+        String errMsg = 'Gemini API 오류 (${response.statusCode})';
+        try {
+          final errData = jsonDecode(response.body);
+          final msg = errData['error']?['message'] ?? '';
+          if (response.statusCode == 429) {
+            errMsg = '⚠️ API 사용량 한도 초과입니다. 잠시 후 다시 시도해주세요.\n(무료 플랜은 분당 요청 수가 제한됩니다)';
+          } else {
+            errMsg = '❌ Gemini API 오류: $msg';
+          }
+        } catch (_) {}
+        throw Exception(errMsg);
       }
-      return text;
-    } else {
-      String errMsg = 'Gemini API 오류 (${response.statusCode})';
-      try {
-        final errData = jsonDecode(response.body);
-        errMsg = '❌ Gemini API 오류: ${errData['error']?['message'] ?? ''}';
-      } catch (_) {}
-      throw Exception(errMsg);
     }
+    throw Exception('최대 재시도 횟수 초과');
   }
 
   // ────────────────────────────
