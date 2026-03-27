@@ -274,29 +274,36 @@ class _RenderingTabState extends State<_RenderingTab> {
     'custom': {'label': '사용자 지정', 'desc': '직접 설정'},
   };
 
-  // 장면 수만큼 랜덤 효과 필터 생성 (Mac/Linux용)
+  // 장면 수만큼 랜덤 효과 필터 생성 (Mac/Linux 쉘 스크립트용 - \ 이스케이프 포함)
   String _buildRandomEffectFilter(int sceneCount) {
+    // 쉘 스크립트용: 작은따옴표 안이므로 \ 이스케이프 필요
     final effects = [
-      'zoompan=z=\'min(zoom+0.0015,1.3)\':x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':d=DURATION:s=1920x1080',
-      'zoompan=z=\'if(eq(on\\,1)\\,1.3\\,max(zoom-0.0015\\,1.0))\':x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':d=DURATION:s=1920x1080',
-      'zoompan=z=\'min(zoom+0.001,1.2)\':x=\'if(eq(on\\,1)\\,0\\,x+1)\':y=\'ih/2-(ih/zoom/2)\':d=DURATION:s=1920x1080',
-      'zoompan=z=\'min(zoom+0.001,1.2)\':x=\'if(eq(on\\,1)\\,iw\\,max(x-1\\,0))\':y=\'ih/2-(ih/zoom/2)\':d=DURATION:s=1920x1080',
-      'zoompan=z=\'min(zoom+0.001,1.2)\':x=\'iw/2-(iw/zoom/2)\':y=\'if(eq(on\\,1)\\,0\\,y+1)\':d=DURATION:s=1920x1080',
-      'zoompan=z=\'min(zoom+0.001,1.2)\':x=\'iw/2-(iw/zoom/2)\':y=\'if(eq(on\\,1)\\,ih\\,max(y-1\\,0))\':d=DURATION:s=1920x1080',
+      // 줌인 (중앙)
+      (int d) => "zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=$d:s=1920x1080",
+      // 줌아웃 (중앙)
+      (int d) => "zoompan=z='if(eq(on\\,1)\\,1.3\\,max(zoom-0.0015\\,1.0))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=$d:s=1920x1080",
+      // 오른쪽 패닝
+      (int d) => "zoompan=z='min(zoom+0.001,1.2)':x='if(eq(on\\,1)\\,0\\,x+1)':y='ih/2-(ih/zoom/2)':d=$d:s=1920x1080",
+      // 왼쪽 패닝
+      (int d) => "zoompan=z='min(zoom+0.001,1.2)':x='if(eq(on\\,1)\\,iw\\,max(x-1\\,0))':y='ih/2-(ih/zoom/2)':d=$d:s=1920x1080",
+      // 아래 패닝
+      (int d) => "zoompan=z='min(zoom+0.001,1.2)':x='iw/2-(iw/zoom/2)':y='if(eq(on\\,1)\\,0\\,y+1)':d=$d:s=1920x1080",
+      // 위 패닝
+      (int d) => "zoompan=z='min(zoom+0.001,1.2)':x='iw/2-(iw/zoom/2)':y='if(eq(on\\,1)\\,ih\\,max(y-1\\,0))':d=$d:s=1920x1080",
     ];
-    final sceneDuration = widget.project.scenes.isNotEmpty
-        ? widget.project.scenes.first.duration : 5.0;
-    final d = (sceneDuration * 25).toInt();
     final seed = DateTime.now().millisecondsSinceEpoch;
     final filters = StringBuffer();
     int lastIdx = -1;
     for (int i = 0; i < sceneCount; i++) {
+      // 각 장면마다 해당 장면의 실제 duration 사용 (fix: first.duration → scenes[i].duration)
+      final scene = widget.project.scenes[i];
+      final d = (scene.duration * 25).toInt().clamp(1, 99999);
       int idx;
-      do { idx = (seed ~/ (i + 1) + i * 3) % effects.length; } while (idx == lastIdx);
+      do { idx = (seed ~/ (i + 1) + i * 3) % effects.length; } while (idx == lastIdx && effects.length > 1);
       lastIdx = idx;
-      final f = effects[idx].replaceAll('DURATION', '$d');
+      final f = effects[idx](d);
       // format=yuv420p,scale 먼저 적용해야 zoompan이 정상 동작
-      filters.write('[$i:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,${f},setsar=1[v$i];');
+      filters.write('[$i:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,$f,setsar=1[v$i];');
     }
     final concat = List.generate(sceneCount, (i) => '[v$i]').join('');
     filters.write('${concat}concat=n=$sceneCount:v=1:a=0[vid]');
@@ -786,11 +793,34 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     final args = <String>['-y']; // 덮어쓰기 허용
 
     // ── 공통 장면 필터 생성 (따옴표 없는 안전한 버전) ──
-    // zoompan은 Windows Process.start()에서 작은따옴표 파싱 오류 유발
-    // → scale+pad 방식으로 대체 (빠르고 안정적)
-    // inputIdx → 출력 레이블은 sceneIndex(i) 기준으로 명확히 분리
-    // [sv{i}] = 장면i의 비디오 출력, [sa{i}] = 장면i의 오디오 출력
+    // ── 랜덤 카메라 효과 필터 목록 (Process.start 인수 배열용 → 따옴표 불필요) ──
+    // Process.start() 인수 배열 방식: 쉘 이스케이프(\ 없이) 직접 FFmpeg 표현식 사용
+    final _randomEffects = [
+      // 줌인 (중앙)
+      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.0015,1.3):x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      // 줌아웃 (중앙)
+      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=if(eq(on,1),1.3,max(zoom-0.0015,1.0)):x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      // 오른쪽 패닝
+      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=if(eq(on,1),0,x+1):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      // 왼쪽 패닝
+      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=if(eq(on,1),iw,max(x-1,0)):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      // 아래 패닝
+      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=iw/2-(iw/zoom/2):y=if(eq(on,1),0,y+1):d=$d:s=1920x1080,setsar=1',
+      // 위 패닝
+      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=iw/2-(iw/zoom/2):y=if(eq(on,1),ih,max(y-1,0)):d=$d:s=1920x1080,setsar=1',
+    ];
+
+    // 장면별 필터 생성: 랜덤 효과 ON/OFF 분기
     String makeVideoFilter(int inputIdx, int sceneIdx) {
+      final scene = scenes[sceneIdx];
+      final d = (scene.duration * 25).toInt().clamp(1, 99999);
+      if (_includeRandomEffect) {
+        // 랜덤 효과: 장면마다 다른 효과 선택 (연속 같은 효과 방지)
+        final effectIdx = sceneIdx % _randomEffects.length;
+        final effectFilter = _randomEffects[effectIdx](d);
+        return '[$inputIdx:v]$effectFilter[sv$sceneIdx]';
+      }
+      // 기본: scale+pad (안정적, 빠름)
       return '[$inputIdx:v]format=yuv420p,'
           'scale=1920:1080:force_original_aspect_ratio=decrease,'
           'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[sv$sceneIdx]';
@@ -812,7 +842,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           args.addAll(['-i', '$scenesDir${Platform.pathSeparator}scene_${i + 1}_tts.wav']);
         }
       }
-      // filter_complex: 비디오 scale+pad, 오디오 concat
+      // filter_complex: 비디오(랜덤 효과 포함), 오디오 concat
       final filterParts = StringBuffer();
       final vidConcat = StringBuffer();
       final audConcat = StringBuffer();
@@ -821,14 +851,12 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         final scene = scenes[i];
         final vidIdx = inputIdx++;
         final audIdx = scene.sceneTtsBytes != null ? inputIdx++ : -1;
-        // ✅ 수정: sceneIdx(i) 기준으로 출력 레이블 [sv{i}] 생성 → vidConcat과 일치
         filterParts.write(makeVideoFilter(vidIdx, i));
         filterParts.write(';');
         vidConcat.write('[sv$i]');
         if (audIdx >= 0) {
           audConcat.write('[$audIdx:a]');
         } else {
-          // TTS 없는 장면: 묵음 삽입
           filterParts.write('aevalsrc=0:d=${scene.duration.toStringAsFixed(3)},aformat=sample_rates=24000:channel_layouts=mono[sa$i];');
           audConcat.write('[sa$i]');
         }
@@ -851,7 +879,6 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         }
       }
       args.addAll(['-i', ttsFilePath]);
-      // ✅ 수정: makeVideoFilter(inputIdx, sceneIdx) 시그니처 맞춤
       final perScene = List.generate(sceneCount, (i) => makeVideoFilter(i, i)).join(';');
       final concatIn = List.generate(sceneCount, (i) => '[sv$i]').join('');
       final filterStr = '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]';
@@ -870,7 +897,6 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           args.addAll(['-f', 'lavfi', '-t', dur, '-i', 'color=black:s=1920x1080:r=25']);
         }
       }
-      // ✅ 수정: makeVideoFilter(inputIdx, sceneIdx) 시그니처 맞춤
       final perScene = List.generate(sceneCount, (i) => makeVideoFilter(i, i)).join(';');
       final concatIn = List.generate(sceneCount, (i) => '[sv$i]').join('');
       args.addAll(['-filter_complex', '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]']);
