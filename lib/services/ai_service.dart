@@ -148,16 +148,17 @@ $styleGuide
     const systemPrompt = '''
 당신은 영상 편집 전문가입니다. 주어진 대본을 영상 장면으로 분할하는 역할을 합니다.
 
-규칙:
-1. 대본을 의미 단위로 분할하되 각 장면은 10~30초 분량(약 50~120자)이 되도록 합니다
-2. 각 장면에 어울리는 이미지 생성 프롬프트를 영어로 작성합니다
-3. 반드시 아래 JSON 형식으로만 응답하세요 (코드블록 없이 순수 JSON만)
-4. imagePrompt는 간결하게 100자 이내 영어로 작성하세요
+[절대 규칙 - 반드시 준수]
+1. script 필드에는 반드시 입력된 대본의 원문을 그대로 사용하세요. 절대로 요약, 수정, 재작성하지 마세요.
+2. 대본 전체를 빠짐없이 분할하세요. 일부를 생략하거나 합치지 마세요.
+3. 분할 기준: 자연스러운 문장/단락 경계에서 자르되 각 장면은 1~4문장 분량으로 합니다.
+4. 각 장면에 어울리는 이미지 프롬프트를 영어로 작성합니다 (100자 이내).
+5. 반드시 아래 JSON 형식으로만 응답하세요 (코드블록 없이 순수 JSON만).
 
 응답 형식:
 [
   {
-    "script": "장면 대본 텍스트",
+    "script": "원문 그대로의 장면 대본 (수정 금지)",
     "imagePrompt": "English image prompt (keep under 100 chars)"
   }
 ]
@@ -575,16 +576,26 @@ $styleGuide
       }
     });
 
-    final response = await http.post(
-      Uri.parse(url),
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,   // 헤더 방식 (공식 문서 기준)
-      },
-      body: requestBody,
-    ).timeout(const Duration(minutes: 5));
+    // 429 Rate Limit 자동 재시도 (최대 3회, 지수 백오프)
+    const maxRetries = 3;
+    final retryDelays = [5, 15, 30];
+    http.Response? response;
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      response = await http.post(
+        Uri.parse(url),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: requestBody,
+      ).timeout(const Duration(minutes: 5));
+      if (response.statusCode != 429) break;
+      if (attempt < maxRetries) {
+        await Future.delayed(Duration(seconds: retryDelays[attempt]));
+      }
+    }
 
-    if (response.statusCode == 200) {
+    if (response!.statusCode == 200) {
       final data = jsonDecode(response.body);
       final candidates = data['candidates'] as List?;
       if (candidates == null || candidates.isEmpty) {
