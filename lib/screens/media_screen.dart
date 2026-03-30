@@ -243,6 +243,9 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
   // 캐릭터 참조 목록 (채널 설정에서 로드 + 로컬 관리)
   final List<CharacterReference> _characters = [];
 
+  // 로컬 SD WebUI 주소 컨트롤러 (채널 설정과 연동)
+  late TextEditingController _sdUrlController;
+
   // ImageResolution → Gemini imageSize 문자열 변환
   String get _selectedResolution {
     switch (_selectedRes) {
@@ -260,6 +263,8 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
     final channel = widget.provider.channels
         .where((c) => c.id == widget.project.channelId)
         .firstOrNull;
+    final savedSdUrl = channel?.videoSettings.localSdUrl ?? 'http://127.0.0.1:7860';
+    _sdUrlController = TextEditingController(text: savedSdUrl);
     if (channel != null) {
       _selectedStyle = channel.videoSettings.imageStyle;
       _selectedModel = channel.videoSettings.imageModel;
@@ -272,6 +277,12 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
       _videoHd = channel.videoSettings.videoHd;
       _aiVideoSceneCount = channel.videoSettings.aiVideoSceneCount;
     }
+  }
+
+  @override
+  void dispose() {
+    _sdUrlController.dispose();
+    super.dispose();
   }
 
   // 채널 설정에 스타일/캐릭터 저장
@@ -295,7 +306,9 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
         useZoomEffect: channel.videoSettings.useZoomEffect,
         zoomIntensity: channel.videoSettings.zoomIntensity,
         useBgm: channel.videoSettings.useBgm,
-        localSdUrl: channel.videoSettings.localSdUrl,
+        localSdUrl: _sdUrlController.text.trim().isNotEmpty
+            ? _sdUrlController.text.trim()
+            : channel.videoSettings.localSdUrl,
         localSdModel: channel.videoSettings.localSdModel,
         videoRatio: _videoRatio,
         videoDuration: _videoDuration,
@@ -1286,13 +1299,29 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
         _label('WebUI 주소'),
         const SizedBox(height: 6),
         TextField(
-          controller: TextEditingController(
-              text: 'http://127.0.0.1:7860'),
-          style: GoogleFonts.notoSansKr(fontSize: 12),
-          decoration: const InputDecoration(
-            contentPadding:
-                EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          controller: _sdUrlController,
+          style: GoogleFonts.notoSansKr(fontSize: 12, color: AppTheme.textPrimary),
+          decoration: InputDecoration(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            hintText: 'http://127.0.0.1:7860',
+            hintStyle: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 12),
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.save_outlined, size: 16),
+              tooltip: '주소 저장',
+              onPressed: () {
+                _saveSettingsToChannel();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('WebUI 주소 저장됨: ${_sdUrlController.text.trim()}',
+                        style: GoogleFonts.notoSansKr(fontSize: 12)),
+                    duration: const Duration(seconds: 2),
+                    backgroundColor: AppTheme.success,
+                  ),
+                );
+              },
+            ),
           ),
+          onEditingComplete: _saveSettingsToChannel,
         ),
         const SizedBox(height: 12),
       ],
