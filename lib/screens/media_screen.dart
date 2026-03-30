@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:archive/archive.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:path_provider/path_provider.dart';
@@ -243,6 +244,12 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
   // 캐릭터 참조 목록 (채널 설정에서 로드 + 로컬 관리)
   final List<CharacterReference> _characters = [];
 
+  // ── 이미지 다운로드 관련 ──
+  final Set<int> _selectedImages = {};       // 체크박스 선택된 장면 인덱스
+  bool _isDownloadMode = false;              // 다운로드 모드 ON/OFF
+  final TextEditingController _rangeFromCtrl = TextEditingController();
+  final TextEditingController _rangeToCtrl = TextEditingController();
+
   // 로컬 SD WebUI 주소 컨트롤러 (채널 설정과 연동)
   late TextEditingController _sdUrlController;
 
@@ -282,6 +289,8 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
   @override
   void dispose() {
     _sdUrlController.dispose();
+    _rangeFromCtrl.dispose();
+    _rangeToCtrl.dispose();
     super.dispose();
   }
 
@@ -1042,36 +1051,76 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
         Expanded(
           child: Column(
             children: [
-              // 미디어 화면에서 대본 수정 안내 배너
+              // 상단 배너: 안내 + 다운로드 버튼들
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: const BoxDecoration(
                   border: Border(bottom: BorderSide(color: AppTheme.border)),
                 ),
-                child: Row(
+                child: Column(
                   children: [
-                    Icon(Icons.info_outline_rounded,
-                        color: AppTheme.textHint, size: 14),
-                    const SizedBox(width: 6),
-                    Text(
-                      '이미지를 생성했더라도 대본 수정 후 장면 재분할 → 이미지 재생성이 가능합니다',
-                      style: GoogleFonts.notoSansKr(
-                          color: AppTheme.textHint, fontSize: 10),
-                    ),
-                    const Spacer(),
-                    Consumer<AppProvider>(
-                      builder: (ctx, prov, _) => TextButton.icon(
-                        onPressed: () => prov.setNavIndex(3),
-                        icon: const Icon(Icons.edit_note_rounded, size: 12),
-                        label: Text('대본 화면',
-                            style: GoogleFonts.notoSansKr(fontSize: 11)),
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppTheme.primary,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          minimumSize: Size.zero,
+                    Row(
+                      children: [
+                        Icon(Icons.info_outline_rounded, color: AppTheme.textHint, size: 14),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            '이미지를 생성했더라도 대본 수정 후 장면 재분할 → 이미지 재생성이 가능합니다',
+                            style: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 10),
+                          ),
                         ),
-                      ),
+                        Consumer<AppProvider>(
+                          builder: (ctx, prov, _) => TextButton.icon(
+                            onPressed: () => prov.setNavIndex(3),
+                            icon: const Icon(Icons.edit_note_rounded, size: 12),
+                            label: Text('대본 화면', style: GoogleFonts.notoSansKr(fontSize: 11)),
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppTheme.primary,
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              minimumSize: Size.zero,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    // 이미지 다운로드 버튼 행
+                    Row(
+                      children: [
+                        const Icon(Icons.download_rounded, size: 13, color: AppTheme.textSecondary),
+                        const SizedBox(width: 4),
+                        Text('이미지 다운로드:',
+                            style: GoogleFonts.notoSansKr(color: AppTheme.textSecondary, fontSize: 11)),
+                        const SizedBox(width: 6),
+                        // 전체 다운로드
+                        _miniBtn(
+                          icon: Icons.download_for_offline_rounded,
+                          label: '전체',
+                          color: AppTheme.success,
+                          onTap: _downloadAllImages,
+                        ),
+                        const SizedBox(width: 4),
+                        // 범위 지정
+                        _miniBtn(
+                          icon: Icons.filter_list_rounded,
+                          label: '범위 지정',
+                          color: AppTheme.primary,
+                          onTap: _showRangeDownloadDialog,
+                        ),
+                        const SizedBox(width: 4),
+                        // 체크박스 선택 모드
+                        _miniBtn(
+                          icon: _isDownloadMode ? Icons.close_rounded : Icons.check_box_outlined,
+                          label: _isDownloadMode ? '선택 종료' : '선택 다운로드',
+                          color: _isDownloadMode ? AppTheme.error : AppTheme.warning,
+                          onTap: () {
+                            setState(() {
+                              _isDownloadMode = !_isDownloadMode;
+                              if (!_isDownloadMode) _selectedImages.clear();
+                            });
+                          },
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -1081,10 +1130,40 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
                     ? _buildEmptyScenes()
                     : _buildSceneGrid(),
               ),
+              // 다운로드 모드 액션바
+              _buildDownloadActionBar(),
             ],
           ),
         ),
       ],
+    );
+  }
+
+  Widget _miniBtn({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 3),
+            Text(label, style: GoogleFonts.notoSansKr(color: color, fontSize: 11, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2305,6 +2384,210 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
     );
   }
 
+  // ── 이미지 다운로드 함수들 ──
+
+  /// 이미지 단일 저장
+  Future<void> _downloadSingleImage(int index) async {
+    final scene = widget.project.scenes[index];
+    if (scene.imageBytes == null) {
+      _showSnack('장면 ${index + 1}에 이미지가 없습니다.');
+      return;
+    }
+    final result = await FilePicker.platform.saveFile(
+      dialogTitle: '이미지 저장',
+      fileName: 'scene_${index + 1}.jpg',
+      allowedExtensions: ['jpg'],
+      type: FileType.custom,
+    );
+    if (result != null) {
+      await File(result).writeAsBytes(scene.imageBytes!);
+      _showSnack('✅ 장면 ${index + 1} 이미지 저장 완료');
+    }
+  }
+
+  /// 선택된 이미지들을 ZIP으로 다운로드
+  Future<void> _downloadImages(Set<int> indices) async {
+    final scenes = widget.project.scenes;
+    final validIndices = indices.where((i) => i < scenes.length && scenes[i].imageBytes != null).toList()..sort();
+    if (validIndices.isEmpty) {
+      _showSnack('다운로드할 이미지가 없습니다. 이미지를 먼저 생성해주세요.');
+      return;
+    }
+
+    // 1개면 단일 파일, 여러 개면 ZIP
+    if (validIndices.length == 1) {
+      await _downloadSingleImage(validIndices.first);
+      return;
+    }
+
+    final safe = widget.project.title.replaceAll(RegExp(r'[^\w가-힣]'), '_');
+    final result = await FilePicker.platform.saveFile(
+      dialogTitle: '이미지 ZIP 저장',
+      fileName: '${safe}_images.zip',
+      allowedExtensions: ['zip'],
+      type: FileType.custom,
+    );
+    if (result == null) return;
+
+    final archive = Archive();
+    for (final i in validIndices) {
+      final bytes = scenes[i].imageBytes!;
+      archive.addFile(ArchiveFile('scene_${i + 1}.jpg', bytes.length, bytes));
+    }
+    final zipBytes = ZipEncoder().encode(archive);
+    await File(result).writeAsBytes(zipBytes);
+    _showSnack('✅ ${validIndices.length}개 이미지 ZIP 저장 완료');
+  }
+
+  /// 전체 이미지 다운로드
+  Future<void> _downloadAllImages() async {
+    final total = widget.project.scenes.length;
+    final all = <int>{};
+    for (int i = 0; i < total; i++) all.add(i);
+    await _downloadImages(all);
+  }
+
+  /// 범위 다운로드 다이얼로그
+  void _showRangeDownloadDialog() {
+    _rangeFromCtrl.clear();
+    _rangeToCtrl.clear();
+    final total = widget.project.scenes.length;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgElevated,
+        title: Text('범위 지정 다운로드',
+            style: GoogleFonts.notoSansKr(color: AppTheme.textPrimary, fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('총 $total개 장면 (1~$total)',
+                style: GoogleFonts.notoSansKr(color: AppTheme.textSecondary, fontSize: 12)),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _rangeFromCtrl,
+                    keyboardType: TextInputType.number,
+                    style: GoogleFonts.notoSansKr(color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      labelText: '시작 번호',
+                      labelStyle: GoogleFonts.notoSansKr(color: AppTheme.textSecondary, fontSize: 12),
+                      hintText: '예: 1',
+                      hintStyle: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text('~', style: GoogleFonts.notoSansKr(color: AppTheme.textPrimary, fontSize: 18)),
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _rangeToCtrl,
+                    keyboardType: TextInputType.number,
+                    style: GoogleFonts.notoSansKr(color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      labelText: '끝 번호',
+                      labelStyle: GoogleFonts.notoSansKr(color: AppTheme.textSecondary, fontSize: 12),
+                      hintText: '예: $total',
+                      hintStyle: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('취소', style: GoogleFonts.notoSansKr(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final from = int.tryParse(_rangeFromCtrl.text.trim());
+              final to = int.tryParse(_rangeToCtrl.text.trim());
+              if (from == null || to == null || from < 1 || to < from || to > total) {
+                _showSnack('올바른 범위를 입력해주세요 (1~$total)');
+                return;
+              }
+              Navigator.pop(ctx);
+              // 1-based → 0-based 변환
+                      final indices = <int>{};
+              for (int k = from - 1; k < to; k++) indices.add(k);
+              _downloadImages(indices);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
+            child: Text('다운로드', style: GoogleFonts.notoSansKr(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 이미지 다운로드 액션 바 (하단 고정)
+  Widget _buildDownloadActionBar() {
+    if (!_isDownloadMode) return const SizedBox.shrink();
+    final selectedCount = _selectedImages.length;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.bgElevated,
+        border: const Border(top: BorderSide(color: AppTheme.border)),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 8, offset: const Offset(0, -2))],
+      ),
+      child: Row(
+        children: [
+          Text(
+            selectedCount > 0 ? '$selectedCount개 선택됨' : '이미지를 선택하세요',
+            style: GoogleFonts.notoSansKr(color: AppTheme.textSecondary, fontSize: 13),
+          ),
+          const Spacer(),
+          TextButton.icon(
+            onPressed: () {
+              setState(() {
+                if (_selectedImages.length == widget.project.scenes.length) {
+                  _selectedImages.clear();
+                } else {
+                  _selectedImages.addAll(List.generate(widget.project.scenes.length, (i) => i));
+                }
+              });
+            },
+            icon: Icon(
+              _selectedImages.length == widget.project.scenes.length
+                  ? Icons.deselect_rounded
+                  : Icons.select_all_rounded,
+              size: 16,
+            ),
+            label: Text(
+              _selectedImages.length == widget.project.scenes.length ? '전체 해제' : '전체 선택',
+              style: GoogleFonts.notoSansKr(fontSize: 12),
+            ),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.textSecondary),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: selectedCount == 0 ? null : () => _downloadImages(_selectedImages),
+            icon: const Icon(Icons.download_rounded, size: 16),
+            label: Text('선택 다운로드 ($selectedCount)',
+                style: GoogleFonts.notoSansKr(fontSize: 12)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primary,
+              disabledBackgroundColor: AppTheme.border,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSceneGrid() {
     return ListView.builder(
       padding: const EdgeInsets.all(16),
@@ -2312,7 +2595,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
       itemBuilder: (context, i) {
         final scene = widget.project.scenes[i];
         final isAiVideo = i < _aiVideoSceneCount;
-        return _SceneCard(
+        final card = _SceneCard(
           scene: scene,
           index: i,
           isAiVideo: isAiVideo,
@@ -2326,12 +2609,52 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
             scene.imagePrompt = newPrompt;
             widget.provider.updateProject(widget.project);
           },
-          onCancelVideo: (_generatingVideoScene == i)
-              ? _cancelVideoGeneration
-              : null,
+          onCancelVideo: (_generatingVideoScene == i) ? _cancelVideoGeneration : null,
           onRegenerateVideo: (isAiVideo && !_isGenerating && !_isVideoGenerating && scene.imageBytes != null)
               ? () => _regenerateSingleVideo(i)
               : null,
+          onDownload: () => _downloadSingleImage(i),
+        );
+
+        if (!_isDownloadMode) return card;
+
+        // 다운로드 모드: 체크박스 오버레이
+        return Stack(
+          children: [
+            card,
+            Positioned(
+              top: 8,
+              left: 8,
+              child: GestureDetector(
+                onTap: () {
+                  setState(() {
+                    if (_selectedImages.contains(i)) {
+                      _selectedImages.remove(i);
+                    } else {
+                      _selectedImages.add(i);
+                    }
+                  });
+                },
+                child: Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: _selectedImages.contains(i)
+                        ? AppTheme.primary
+                        : Colors.black.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: _selectedImages.contains(i) ? AppTheme.primary : Colors.white,
+                      width: 2,
+                    ),
+                  ),
+                  child: _selectedImages.contains(i)
+                      ? const Icon(Icons.check_rounded, color: Colors.white, size: 18)
+                      : null,
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -2384,6 +2707,7 @@ class _SceneCard extends StatefulWidget {
   // ── 영상 관련 콜백 ──
   final VoidCallback? onCancelVideo;       // 영상 생성 취소
   final VoidCallback? onRegenerateVideo;  // 영상 재생성
+  final VoidCallback? onDownload;          // 이미지 다운로드
 
   const _SceneCard({
     required this.scene,
@@ -2398,6 +2722,7 @@ class _SceneCard extends StatefulWidget {
     required this.onPromptEdit,
     this.onCancelVideo,
     this.onRegenerateVideo,
+    this.onDownload,
   });
 
   @override
@@ -2621,6 +2946,15 @@ class _SceneCardState extends State<_SceneCard> {
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                 ),
+                if (widget.scene.imageBytes != null)
+                  IconButton(
+                    icon: const Icon(Icons.download_rounded, size: 18),
+                    color: AppTheme.primary,
+                    tooltip: '이 이미지 다운로드',
+                    onPressed: widget.onDownload,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  ),
               ],
             ),
             const SizedBox(height: 10),
@@ -3156,84 +3490,121 @@ class _TtsTabState extends State<_TtsTab>
       // 세마포어 역할: 동시 실행 중인 Future 수 제한
       final semaphore = _Semaphore(maxConcurrent);
 
-      setState(() => _statusMsg = '⚡ $totalCount개 장면 병렬 TTS 생성 중... (동시 $maxConcurrent개)');
+      // Gemini는 순차 처리 + 1초 딜레이 (RPM 초과 방지), 나머지는 병렬 처리
+      final isGeminiEngine = _engine == TtsEngine.gemini;
+      setState(() => _statusMsg = isGeminiEngine
+          ? '🎙️ $totalCount개 장면 순차 TTS 생성 중... (API 한도 보호)'
+          : '⚡ $totalCount개 장면 병렬 TTS 생성 중... (동시 $maxConcurrent개)');
 
-      // 각 장면에 대한 Future 생성
-      final futures = List.generate(totalCount, (i) async {
-        if (_isCancelled) return;
-        final scene = scenes[i];
-        final text = scene.scriptText.trim();
+      if (isGeminiEngine) {
+        // ── Gemini: 순차 처리 + 장면 사이 1초 딜레이 ──
+        for (int i = 0; i < totalCount; i++) {
+          if (_isCancelled) break;
+          final scene = scenes[i];
+          final text = scene.scriptText.trim();
 
-        if (text.isEmpty) {
-          scene.duration = 0.5;
-          completedCount++;
-          if (mounted) setState(() => _statusMsg = '⚡ [$completedCount/$totalCount] 장면 ${i + 1} 건너뜀 (빈 텍스트)');
-          return;
-        }
+          if (text.isEmpty) {
+            scene.duration = 0.5;
+            completedCount++;
+            if (mounted) setState(() => _statusMsg = '🎙️ [$completedCount/$totalCount] 장면 ${i + 1} 건너뜀 (빈 텍스트)');
+            continue;
+          }
 
-        await semaphore.acquire();
-        try {
-          if (_isCancelled) return;
+          try {
+            if (mounted) setState(() => _statusMsg = '🎙️ [$completedCount/$totalCount] 장면 ${i + 1} 생성 중...');
 
-          Uint8List sceneBytes;
-          switch (_engine) {
-            case TtsEngine.gemini:
-              final chunks = TtsChunkProcessor.splitTextIntoChunks(text, chunkSize: 2000);
-              final chunkBytes = <Uint8List>[];
-              for (int c = 0; c < chunks.length; c++) {
-                if (_isCancelled) break;
-                final b = await GeminiService(apiKey).generateTts(
-                  text: chunks[c],
-                  voiceName: _selectedGeminiVoice,
-                  speakingRate: _speed,
-                );
-                chunkBytes.add(b);
+            final chunks = TtsChunkProcessor.splitTextIntoChunks(text, chunkSize: 2000);
+            final chunkBytes = <Uint8List>[];
+            for (int c = 0; c < chunks.length; c++) {
+              if (_isCancelled) break;
+              final b = await GeminiService(apiKey).generateTts(
+                text: chunks[c],
+                voiceName: _selectedGeminiVoice,
+                speakingRate: _speed,
+              );
+              chunkBytes.add(b);
+              // 청크 사이도 딜레이
+              if (c < chunks.length - 1 && !_isCancelled) {
+                await Future.delayed(const Duration(milliseconds: 500));
               }
-              sceneBytes = TtsChunkProcessor.combineAudioBytes(chunkBytes);
-              break;
-
-            case TtsEngine.elevenlabs:
-              final truncated = text.length > 5000 ? text.substring(0, 5000) : text;
-              sceneBytes = await ElevenLabsService(apiKey).generateTts(
-                text: truncated,
-                voiceId: _elevenLabsVoiceId.isNotEmpty ? _elevenLabsVoiceId : '21m00Tcm4TlvDq8ikWAM',
-                speed: _speed,
-              );
-              break;
-
-            case TtsEngine.clova:
-              final clovaKeys = widget.provider.apiKeys;
-              sceneBytes = await ClovaTtsService(
-                clientId: clovaKeys.clovaApiKey,
-                clientSecret: clovaKeys.clovaApiSecret,
-              ).generateTts(
-                text: text,
-                speaker: _clovaVoiceId,
-                speed: (_speed * 2 - 2).round().clamp(-5, 5),
-              );
-              break;
-
-            default:
-              return;
+            }
+            final sceneBytes = TtsChunkProcessor.combineAudioBytes(chunkBytes);
+            resultBytes[i] = sceneBytes;
+            scene.sceneTtsBytes = sceneBytes;
+            scene.duration = _calcTtsDuration(sceneBytes).clamp(0.5, 300.0);
+            completedCount++;
+            if (mounted) {
+              setState(() => _statusMsg =
+                  '🎙️ [$completedCount/$totalCount] 장면 ${i + 1} 완료 (${scene.duration.toStringAsFixed(1)}초)');
+            }
+          } catch (e) {
+            if (mounted) setState(() => _statusMsg = '⚠️ 장면 ${i + 1} 실패: $e');
           }
 
-          // 결과 저장 (인덱스 순서 보장)
-          resultBytes[i] = sceneBytes;
-          scene.sceneTtsBytes = sceneBytes;
-          scene.duration = _calcTtsDuration(sceneBytes).clamp(0.5, 300.0);
-
-          completedCount++;
-          if (mounted) {
-            setState(() => _statusMsg =
-                '⚡ [$completedCount/$totalCount] 장면 ${i + 1} 완료 (${scene.duration.toStringAsFixed(1)}초)');
+          // 장면 사이 1초 딜레이 (마지막 장면 제외)
+          if (i < totalCount - 1 && !_isCancelled) {
+            await Future.delayed(const Duration(seconds: 1));
           }
-        } finally {
-          semaphore.release();
         }
-      });
+      } else {
+        // ── 기타 엔진: 병렬 처리 (기존 방식 유지) ──
+        final futures = List.generate(totalCount, (i) async {
+          if (_isCancelled) return;
+          final scene = scenes[i];
+          final text = scene.scriptText.trim();
 
-      // 모든 Future 동시 실행 대기
-      await Future.wait(futures);
+          if (text.isEmpty) {
+            scene.duration = 0.5;
+            completedCount++;
+            if (mounted) setState(() => _statusMsg = '⚡ [$completedCount/$totalCount] 장면 ${i + 1} 건너뜀 (빈 텍스트)');
+            return;
+          }
+
+          await semaphore.acquire();
+          try {
+            if (_isCancelled) return;
+
+            Uint8List sceneBytes;
+            switch (_engine) {
+              case TtsEngine.elevenlabs:
+                final truncated = text.length > 5000 ? text.substring(0, 5000) : text;
+                sceneBytes = await ElevenLabsService(apiKey).generateTts(
+                  text: truncated,
+                  voiceId: _elevenLabsVoiceId.isNotEmpty ? _elevenLabsVoiceId : '21m00Tcm4TlvDq8ikWAM',
+                  speed: _speed,
+                );
+                break;
+
+              case TtsEngine.clova:
+                final clovaKeys = widget.provider.apiKeys;
+                sceneBytes = await ClovaTtsService(
+                  clientId: clovaKeys.clovaApiKey,
+                  clientSecret: clovaKeys.clovaApiSecret,
+                ).generateTts(
+                  text: text,
+                  speaker: _clovaVoiceId,
+                  speed: (_speed * 2 - 2).round().clamp(-5, 5),
+                );
+                break;
+
+              default:
+                return;
+            }
+
+            resultBytes[i] = sceneBytes;
+            scene.sceneTtsBytes = sceneBytes;
+            scene.duration = _calcTtsDuration(sceneBytes).clamp(0.5, 300.0);
+            completedCount++;
+            if (mounted) {
+              setState(() => _statusMsg =
+                  '⚡ [$completedCount/$totalCount] 장면 ${i + 1} 완료 (${scene.duration.toStringAsFixed(1)}초)');
+            }
+          } finally {
+            semaphore.release();
+          }
+        });
+        await Future.wait(futures);
+      }
 
       if (_isCancelled) {
         setState(() {
