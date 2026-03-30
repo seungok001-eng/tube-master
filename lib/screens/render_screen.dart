@@ -711,7 +711,8 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         tempDir.path, scenesDir.path, outputPath,
         hasPerSceneTts: hasPerSceneTts, ttsFilePath: ttsFilePath,
       );
-      setState(() => _renderLog += '[FFmpeg] ${_ffmpegPath} ${ffmpegArgs.take(5).join(" ")} ...\n');
+      // 전체 FFmpeg 명령어 로그 출력 (디버깅용)
+      setState(() => _renderLog += '[FFmpeg 전체 명령]\n${_ffmpegPath} ${ffmpegArgs.join(" ")}\n\n');
 
       // ── FFmpeg 실행 ──
       setState(() { _renderProgress = 0.35; _renderLog += '[3/5] FFmpeg 렌더링 중... (시간이 걸립니다)\n'; });
@@ -808,19 +809,21 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     // ── 공통 장면 필터 생성 (따옴표 없는 안전한 버전) ──
     // ── 랜덤 카메라 효과 필터 목록 (Process.start 인수 배열용 → 따옴표 불필요) ──
     // Process.start() 인수 배열 방식: 쉘 이스케이프(\ 없이) 직접 FFmpeg 표현식 사용
+    // zoompan 필터: Process.start() 인수 배열 방식 → 이스케이프 불필요
+    // scale→pad→setsar→fps→format→zoompan 순서, s= 옵션 제거 (이중 스케일 충돌 방지)
     final _randomEffects = [
       // 줌인 (중앙)
-      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.0015,1.3):x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=min(zoom+0.0015,1.3):x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):d=$d:fps=25',
       // 줌아웃 (중앙)
-      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=if(eq(on,1),1.3,max(zoom-0.0015,1.0)):x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=if(eq(on,1),1.3,max(zoom-0.0015,1.0)):x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):d=$d:fps=25',
       // 오른쪽 패닝
-      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=if(eq(on,1),0,x+1):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=if(eq(on,1),0,x+2):y=ih/2-(ih/zoom/2):d=$d:fps=25',
       // 왼쪽 패닝
-      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=if(eq(on,1),iw,max(x-1,0)):y=ih/2-(ih/zoom/2):d=$d:s=1920x1080,setsar=1',
+      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=if(eq(on,1),iw/zoom*0.1,max(x-2,0)):y=ih/2-(ih/zoom/2):d=$d:fps=25',
       // 아래 패닝
-      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=iw/2-(iw/zoom/2):y=if(eq(on,1),0,y+1):d=$d:s=1920x1080,setsar=1',
+      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=iw/2-(iw/zoom/2):y=if(eq(on,1),0,y+2):d=$d:fps=25',
       // 위 패닝
-      (int d) => 'format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,zoompan=z=min(zoom+0.001,1.2):x=iw/2-(iw/zoom/2):y=if(eq(on,1),ih,max(y-1,0)):d=$d:s=1920x1080,setsar=1',
+      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=iw/2-(iw/zoom/2):y=if(eq(on,1),ih/zoom*0.1,max(y-2,0)):d=$d:fps=25',
     ];
 
     // 장면별 필터 생성: 랜덤 효과 ON/OFF 분기
