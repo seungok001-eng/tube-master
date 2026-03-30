@@ -521,12 +521,30 @@ class _ScriptScreenState extends State<ScriptScreen> {
                     ScriptAiModel.gemini31Pro,
                   ].map((m) => _buildModelOption(m, provider)),
                   const SizedBox(height: 10),
-                  // Claude 그룹
-                  _buildModelGroupHeader('🧠 Claude (Anthropic)', const Color(0xFFD4890A)),
+                  // Claude 3.x 그룹
+                  _buildModelGroupHeader('🧠 Claude 3.x (Anthropic)', const Color(0xFFD4890A)),
                   const SizedBox(height: 6),
                   ...[
                     ScriptAiModel.claude35Sonnet,
+                    ScriptAiModel.claude37Sonnet,
+                  ].map((m) => _buildModelOption(m, provider)),
+                  const SizedBox(height: 10),
+                  // Claude 4 그룹
+                  _buildModelGroupHeader('🔥 Claude 4 (최신)', const Color(0xFFE8620A)),
+                  const SizedBox(height: 6),
+                  ...[
                     ScriptAiModel.claude4Sonnet,
+                    ScriptAiModel.claudeSonnet45,
+                    ScriptAiModel.claudeOpus4,
+                    ScriptAiModel.claudeOpus45,
+                  ].map((m) => _buildModelOption(m, provider)),
+                  const SizedBox(height: 10),
+                  // Claude 4.6 그룹
+                  _buildModelGroupHeader('🚀 Claude 4.6 (최신)', const Color(0xFFB8320A)),
+                  const SizedBox(height: 6),
+                  ...[
+                    ScriptAiModel.claudeSonnet46,
+                    ScriptAiModel.claudeOpus46,
                   ].map((m) => _buildModelOption(m, provider)),
                   const SizedBox(height: 20),
                   _sectionLabel('목표 영상 길이'),

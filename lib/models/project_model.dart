@@ -12,9 +12,17 @@ enum ScriptAiModel {
   gemini3ProImage,
   // Gemini 3.1 계열
   gemini31Pro,
-  // Claude 계열
+  // Claude 3.x 계열
   claude35Sonnet,
+  claude37Sonnet,
+  // Claude 4 계열
   claude4Sonnet,
+  claudeSonnet45,
+  claudeOpus4,
+  claudeOpus45,
+  // Claude 4.6 계열 (최신)
+  claudeOpus46,
+  claudeSonnet46,
 }
 
 extension ScriptAiModelExt on ScriptAiModel {
@@ -25,10 +33,19 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.geminiPro: return 'Gemini 2.5 Pro (최고품질 🏆)';
       case ScriptAiModel.gemini3Flash: return 'Gemini 3.0 Flash (최신 🚀)';
       case ScriptAiModel.gemini31FlashImage: return 'Gemini 3.1 Flash-Image (이미지 특화)';
-      case ScriptAiModel.gemini3ProImage: return 'Gemini 3.1 Pro (최고급 🏆)';  // 3 Pro Image 종료 → 3.1 Pro로 대체
+      case ScriptAiModel.gemini3ProImage: return 'Gemini 3.1 Pro (최고급 🏆)';
       case ScriptAiModel.gemini31Pro: return 'Gemini 3.1 Pro (최고지능 🧠)';
+      // Claude 3.x
       case ScriptAiModel.claude35Sonnet: return 'Claude 3.5 Sonnet';
-      case ScriptAiModel.claude4Sonnet: return 'Claude 3.7 Sonnet (최신)';
+      case ScriptAiModel.claude37Sonnet: return 'Claude 3.7 Sonnet';
+      // Claude 4
+      case ScriptAiModel.claude4Sonnet: return 'Claude Sonnet 4';
+      case ScriptAiModel.claudeSonnet45: return 'Claude Sonnet 4.5 (추천 ✅)';
+      case ScriptAiModel.claudeOpus4: return 'Claude Opus 4 (고성능 🏆)';
+      case ScriptAiModel.claudeOpus45: return 'Claude Opus 4.5 (최고성능 👑)';
+      // Claude 4.6 (최신)
+      case ScriptAiModel.claudeOpus46: return 'Claude Opus 4.6 (최신 최고 🚀)';
+      case ScriptAiModel.claudeSonnet46: return 'Claude Sonnet 4.6 (최신 추천 ✅)';
     }
   }
 
@@ -39,21 +56,44 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.geminiPro: return 'gemini-2.5-pro';
       case ScriptAiModel.gemini3Flash: return 'gemini-3-flash-preview';
       case ScriptAiModel.gemini31FlashImage: return 'gemini-3.1-flash-image-preview';
-      case ScriptAiModel.gemini3ProImage: return 'gemini-3.1-pro-preview';  // gemini-3-pro-image-preview 2026.03.09 종료
+      case ScriptAiModel.gemini3ProImage: return 'gemini-3.1-pro-preview';
       case ScriptAiModel.gemini31Pro: return 'gemini-3.1-pro-preview';
+      // Claude 3.x
       case ScriptAiModel.claude35Sonnet: return 'claude-3-5-sonnet-20241022';
-      case ScriptAiModel.claude4Sonnet: return 'claude-3-7-sonnet-20250219';
+      case ScriptAiModel.claude37Sonnet: return 'claude-3-7-sonnet-20250219';
+      // Claude 4
+      case ScriptAiModel.claude4Sonnet: return 'claude-sonnet-4-20250514';
+      case ScriptAiModel.claudeSonnet45: return 'claude-sonnet-4-5-20250929';
+      case ScriptAiModel.claudeOpus4: return 'claude-opus-4-20250514';
+      case ScriptAiModel.claudeOpus45: return 'claude-opus-4-5-20251101';
+      // Claude 4.6 (최신)
+      case ScriptAiModel.claudeOpus46: return 'claude-opus-4-6-20260205';
+      case ScriptAiModel.claudeSonnet46: return 'claude-sonnet-4-6-20260205';
     }
   }
 
-  bool get isGemini => this != ScriptAiModel.claude35Sonnet &&
-                       this != ScriptAiModel.claude4Sonnet;
+  bool get isGemini {
+    switch (this) {
+      case ScriptAiModel.geminiFlash:
+      case ScriptAiModel.geminiFlashLite:
+      case ScriptAiModel.geminiPro:
+      case ScriptAiModel.gemini3Flash:
+      case ScriptAiModel.gemini31FlashImage:
+      case ScriptAiModel.gemini3ProImage:
+      case ScriptAiModel.gemini31Pro:
+        return true;
+      default:
+        return false;
+    }
+  }
 
-  bool get isClaude => this == ScriptAiModel.claude35Sonnet ||
-                       this == ScriptAiModel.claude4Sonnet;
+  bool get isClaude => !isGemini;
 
   String get modelGroup {
-    if (isClaude) return 'Claude';
+    if (this == ScriptAiModel.claudeOpus46 || this == ScriptAiModel.claudeSonnet46) return 'Claude 4.6';
+    if (this == ScriptAiModel.claudeOpus45 || this == ScriptAiModel.claudeSonnet45) return 'Claude 4.5';
+    if (this == ScriptAiModel.claude4Sonnet || this == ScriptAiModel.claudeOpus4) return 'Claude 4';
+    if (this == ScriptAiModel.claude35Sonnet || this == ScriptAiModel.claude37Sonnet) return 'Claude 3.x';
     if (this == ScriptAiModel.gemini3Flash ||
         this == ScriptAiModel.gemini31FlashImage ||
         this == ScriptAiModel.gemini3ProImage ||
