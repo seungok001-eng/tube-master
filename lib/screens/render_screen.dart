@@ -719,7 +719,9 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
 
       // stderr에서 진행률 파싱 (FFmpeg는 stderr로 출력)
       final totalDur = scenes.fold<double>(0.0, (s, e) => s + e.duration);
+      final stderrBuffer = StringBuffer();
       process.stderr.transform(const SystemEncoding().decoder).listen((data) {
+        stderrBuffer.write(data);
         // time=HH:MM:SS.ss 파싱
         final timeMatch = RegExp(r'time=(\d+):(\d+):(\d+\.\d+)').firstMatch(data);
         if (timeMatch != null && mounted) {
@@ -734,10 +736,21 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
             _directRenderStatus = '처리 중: $timeStr / ${_fmtSecs(totalDur.toInt())}  (${(progress * 100).toInt()}%)';
           });
         }
+        // 오류 메시지 실시간 로그 표시
+        if (data.contains('Error') || data.contains('Invalid') || data.contains('error') || data.contains('No such')) {
+          if (mounted) setState(() => _renderLog += '[FFmpeg] $data');
+        }
       });
 
       final exitCode = await process.exitCode;
       if (exitCode != 0) {
+        // stderr 전체 로그 표시
+        final errLog = stderrBuffer.toString();
+        final errLines = errLog.split('\n').where((l) =>
+          l.contains('Error') || l.contains('Invalid') || l.contains('error') ||
+          l.contains('No such') || l.contains('failed') || l.contains('invalid')
+        ).take(10).join('\n');
+        if (mounted) setState(() => _renderLog += '[FFmpeg 오류 상세]\n$errLines\n');
         throw Exception('FFmpeg 실패 (exit code: $exitCode)\n렌더링 로그를 확인하세요.');
       }
 
@@ -827,7 +840,16 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     }
 
     if (hasPerSceneTts) {
-      // 장면별 이미지 + TTS 1:1 입력
+      // ── 1단계: 입력 인덱스 미리 계산 (vidIdx, audIdx 정확히 매핑) ──
+      final List<int> vidIdxList = [];
+      final List<int> audIdxList = []; // -1이면 TTS 없음
+      int inputIdx = 0;
+      for (int i = 0; i < sceneCount; i++) {
+        vidIdxList.add(inputIdx++);
+        audIdxList.add(scenes[i].sceneTtsBytes != null ? inputIdx++ : -1);
+      }
+
+      // ── 2단계: 실제 입력 추가 (인덱스 순서와 일치) ──
       for (int i = 0; i < sceneCount; i++) {
         final scene = scenes[i];
         final dur = scene.duration.toStringAsFixed(3);
@@ -842,15 +864,15 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           args.addAll(['-i', '$scenesDir${Platform.pathSeparator}scene_${i + 1}_tts.wav']);
         }
       }
-      // filter_complex: 비디오(랜덤 효과 포함), 오디오 concat
+
+      // ── 3단계: filter_complex 구성 ──
       final filterParts = StringBuffer();
       final vidConcat = StringBuffer();
       final audConcat = StringBuffer();
-      int inputIdx = 0;
       for (int i = 0; i < sceneCount; i++) {
         final scene = scenes[i];
-        final vidIdx = inputIdx++;
-        final audIdx = scene.sceneTtsBytes != null ? inputIdx++ : -1;
+        final vidIdx = vidIdxList[i];
+        final audIdx = audIdxList[i];
         filterParts.write(makeVideoFilter(vidIdx, i));
         filterParts.write(';');
         vidConcat.write('[sv$i]');
