@@ -578,7 +578,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           prompt: ChannelType.economy.defaultScriptPrompt,
           topic: 'API 연결 테스트',
           targetMinutes: 1,
-          model: ScriptAiModel.claude35Sonnet,
+          model: ScriptAiModel.claude4Sonnet,
         );
         success = result.isNotEmpty;
       }

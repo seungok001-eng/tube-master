@@ -12,9 +12,6 @@ enum ScriptAiModel {
   gemini3ProImage,
   // Gemini 3.1 계열
   gemini31Pro,
-  // Claude 3.x 계열
-  claude35Sonnet,
-  claude37Sonnet,
   // Claude 4 계열
   claude4Sonnet,
   claudeSonnet45,
@@ -35,9 +32,6 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.gemini31FlashImage: return 'Gemini 3.1 Flash-Image (이미지 특화)';
       case ScriptAiModel.gemini3ProImage: return 'Gemini 3.1 Pro (최고급 🏆)';
       case ScriptAiModel.gemini31Pro: return 'Gemini 3.1 Pro (최고지능 🧠)';
-      // Claude 3.x
-      case ScriptAiModel.claude35Sonnet: return 'Claude 3.5 Sonnet';
-      case ScriptAiModel.claude37Sonnet: return 'Claude 3.7 Sonnet';
       // Claude 4
       case ScriptAiModel.claude4Sonnet: return 'Claude Sonnet 4';
       case ScriptAiModel.claudeSonnet45: return 'Claude Sonnet 4.5 (추천 ✅)';
@@ -58,9 +52,6 @@ extension ScriptAiModelExt on ScriptAiModel {
       case ScriptAiModel.gemini31FlashImage: return 'gemini-3.1-flash-image-preview';
       case ScriptAiModel.gemini3ProImage: return 'gemini-3.1-pro-preview';
       case ScriptAiModel.gemini31Pro: return 'gemini-3.1-pro-preview';
-      // Claude 3.x
-      case ScriptAiModel.claude35Sonnet: return 'claude-3-5-sonnet-20241022';
-      case ScriptAiModel.claude37Sonnet: return 'claude-3-7-sonnet-20250219';
       // Claude 4
       case ScriptAiModel.claude4Sonnet: return 'claude-sonnet-4-20250514';
       case ScriptAiModel.claudeSonnet45: return 'claude-sonnet-4-5-20250929';
@@ -93,7 +84,6 @@ extension ScriptAiModelExt on ScriptAiModel {
     if (this == ScriptAiModel.claudeOpus46 || this == ScriptAiModel.claudeSonnet46) return 'Claude 4.6';
     if (this == ScriptAiModel.claudeOpus45 || this == ScriptAiModel.claudeSonnet45) return 'Claude 4.5';
     if (this == ScriptAiModel.claude4Sonnet || this == ScriptAiModel.claudeOpus4) return 'Claude 4';
-    if (this == ScriptAiModel.claude35Sonnet || this == ScriptAiModel.claude37Sonnet) return 'Claude 3.x';
     if (this == ScriptAiModel.gemini3Flash ||
         this == ScriptAiModel.gemini31FlashImage ||
         this == ScriptAiModel.gemini3ProImage ||

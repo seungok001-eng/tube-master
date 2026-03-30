@@ -521,14 +521,6 @@ class _ScriptScreenState extends State<ScriptScreen> {
                     ScriptAiModel.gemini31Pro,
                   ].map((m) => _buildModelOption(m, provider)),
                   const SizedBox(height: 10),
-                  // Claude 3.x 그룹
-                  _buildModelGroupHeader('🧠 Claude 3.x (Anthropic)', const Color(0xFFD4890A)),
-                  const SizedBox(height: 6),
-                  ...[
-                    ScriptAiModel.claude35Sonnet,
-                    ScriptAiModel.claude37Sonnet,
-                  ].map((m) => _buildModelOption(m, provider)),
-                  const SizedBox(height: 10),
                   // Claude 4 그룹
                   _buildModelGroupHeader('🔥 Claude 4 (최신)', const Color(0xFFE8620A)),
                   const SizedBox(height: 6),
