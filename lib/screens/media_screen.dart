@@ -528,8 +528,11 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
         final rawPrompt = scene.imagePrompt.isNotEmpty
             ? scene.imagePrompt
             : 'Beautiful scene: ${scene.scriptText.substring(0, scene.scriptText.length.clamp(0, 100))}';
+        final channel = widget.provider.channels
+            .where((c) => c.id == widget.project.channelId).firstOrNull;
         final bytes = await _generateWithLocalSd(
           prompt: _buildPrompt(rawPrompt),
+          sdUrl: channel?.videoSettings.localSdUrl,
         );
         scene.imageBytes = bytes;
         scene.isGenerated = true;
@@ -586,8 +589,14 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
   }
 
   /// 로컬 Stable Diffusion WebUI API 호출
-  Future<Uint8List> _generateWithLocalSd({required String prompt}) async {
-    const url = 'http://127.0.0.1:7860/sdapi/v1/txt2img';
+  Future<Uint8List> _generateWithLocalSd({
+    required String prompt,
+    String? sdUrl,  // 채널 설정의 localSdUrl 사용 (없으면 기본값)
+  }) async {
+    final baseUrl = (sdUrl != null && sdUrl.isNotEmpty)
+        ? sdUrl.replaceAll(RegExp(r'/$'), '')
+        : 'http://127.0.0.1:7860';
+    final url = '$baseUrl/sdapi/v1/txt2img';
     final body = {
       'prompt': prompt,
       'negative_prompt': 'blurry, low quality, watermark',
@@ -628,7 +637,12 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
 
       Uint8List bytes;
       if (_selectedModel.isLocal) {
-        bytes = await _generateWithLocalSd(prompt: prompt);
+        final ch = widget.provider.channels
+            .where((c) => c.id == widget.project.channelId).firstOrNull;
+        bytes = await _generateWithLocalSd(
+          prompt: prompt,
+          sdUrl: ch?.videoSettings.localSdUrl,
+        );
       } else if (_selectedModel.isNanoBanana) {
         // ✅ Nano Banana 계열 → generateContent 직접 호출
         bytes = await GeminiService(apiKey).generateImageWithFlash(

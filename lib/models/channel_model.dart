@@ -844,7 +844,7 @@ class VideoSettings {
     this.imageResolution = ImageResolution.fhd1080,
     this.imageStyle = ImageStyle.none,
     List<CharacterReference>? characters,
-    this.aiVideoSceneCount = 5,
+    this.aiVideoSceneCount = 0,  // 기본값 0: 동영상 생성 없이 이미지만 사용
     this.transitionDuration = 0.5,
     this.sceneDuration = 5.0,
     this.useZoomEffect = true,
@@ -911,7 +911,7 @@ class VideoSettings {
       imageResolution: ImageResolution.values[json['imageResolution'] ?? 1],
       imageStyle: parsedStyle,
       characters: chars,
-      aiVideoSceneCount: json['aiVideoSceneCount'] ?? 5,
+      aiVideoSceneCount: json['aiVideoSceneCount'] ?? 0,  // 기본값 0
       transitionDuration: (json['transitionDuration'] ?? 0.5).toDouble(),
       sceneDuration: (json['sceneDuration'] ?? 5.0).toDouble(),
       useZoomEffect: json['useZoomEffect'] ?? true,
