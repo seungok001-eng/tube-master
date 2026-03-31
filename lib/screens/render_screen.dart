@@ -231,6 +231,7 @@ class _RenderingTabState extends State<_RenderingTab> {
   double _subtitleFontSize = 24.0;
   String _subtitleFont = 'NanumGothic';
   int _subtitleMaxChars = 20; // 줄당 최대 글자수
+  int _subtitleBgOpacity = 70; // 자막 배경 불투명도 0~100 (0=외곽선만, 70=기본)
   bool _previewIs169 = true; // 미리보기 모드: true=16:9, false=9:16
 
   // 사용 가능한 자막 폰트 목록
@@ -1061,79 +1062,97 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       final srtFile = File(srtPath);
       if (!srtFile.existsSync()) return 'null';
 
-      // SRT → ASS 변환 후 같은 디렉토리에 저장
-      final assPath = srtPath.replaceAll('.srt', '.ass');
       final srtContent = srtFile.readAsStringSync();
-      final assContent = _convertSrtToAss(srtContent);
-      File(assPath).writeAsStringSync(assContent);
 
-      // ASS 파일명만 사용 (workingDirectory 기준 상대경로)
-      final assFileName = assPath.split(Platform.pathSeparator).last;
-      return 'ass=$assFileName';
+      // drawtext 필터 목록 생성
+      final drawtextList = _srtToDrawtextList(srtContent);
+      if (drawtextList.isEmpty) return 'null';
+
+      // filter_script 파일로 저장 (명령줄 길이 제한 우회)
+      // filter_script는 filter_complex 내용을 파일로 대체하는 FFmpeg 기능
+      // 단, filter_complex 체인 안에서는 filter_script를 쓸 수 없으므로
+      // drawtext 체인을 직접 문자열로 반환
+      return drawtextList.join(',');
     } catch (e) {
       return 'null';
     }
   }
 
-  /// SRT → ASS 변환 (박스 배경 스타일 포함)
-  String _convertSrtToAss(String srtContent) {
+  /// SRT → drawtext 필터 목록 변환
+  /// box=1 + boxcolor → 배경 박스 확실히 렌더링
+  List<String> _srtToDrawtextList(String srtContent) {
     final fontSize = _subtitleFontSize.toInt();
+    final filters = <String>[];
 
-    // ASS 헤더: 박스 배경(BorderStyle=3), 흰색 텍스트, 반투명 검정 박스
-    // ASS 색상: &HAABBGGRR (알파, 파랑, 초록, 빨강)
-    // 흰색: &H00FFFFFF  (알파00=완전불투명, 흰색)
-    // 검정박스: &H99000000 (알파99=40%불투명, 검정)
-    final assHeader = '''[Script Info]
-ScriptType: v4.00+
-PlayResX: 1920
-PlayResY: 1080
-ScaledBorderAndShadow: yes
+    // Windows 한글 폰트 경로 (filter_complex 안에서는 드라이브 콜론을 \\: 이스케이프)
+    // Process.start 인자 배열로 전달되므로 쉘 이스케이프 불필요
+    // FFmpeg filter 내부에서만 : 를 \\: 로 써야 함
+    const winfontPaths = [
+      r'C\:/Windows/Fonts/malgun.ttf',   // 맑은 고딕
+      r'C\:/Windows/Fonts/gulim.ttc',    // 굴림
+      r'C\:/Windows/Fonts/NanumGothic.ttf', // 나눔고딕
+    ];
+    String fontArg = '';
+    for (final fp in winfontPaths) {
+      final realPath = fp.replaceAll(r'C\:/', 'C:/');
+      if (File(realPath).existsSync()) {
+        fontArg = ':fontfile=$fp';
+        break;
+      }
+    }
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Malgun Gothic,$fontSize,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,0,0,0,0,100,100,0,0,3,0,0,2,10,10,40,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-''';
-
-    final eventsBuffer = StringBuffer(assHeader);
-
-    // SRT 블록 파싱
     final blocks = srtContent.trim().split(RegExp(r'\r?\n\r?\n'));
     for (final block in blocks) {
       final lines = block.trim().split(RegExp(r'\r?\n'));
       if (lines.length < 3) continue;
 
-      final timeLine = lines[1];
       final timeMatch = RegExp(
         r'(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)',
-      ).firstMatch(timeLine);
+      ).firstMatch(lines[1]);
       if (timeMatch == null) continue;
 
-      // ASS 시간 형식: H:MM:SS.cs (센티초 2자리)
-      String toAssTime(String h, String m, String s, String ms) {
-        final msInt = int.parse(ms);
-        final cs = (msInt / 10).round().toString().padLeft(2, '0');
-        return '$h:${m.padLeft(2,'0')}:${s.padLeft(2,'0')}.$cs';
-      }
+      double toSec(int h, int m, int s, int ms) =>
+          h * 3600.0 + m * 60.0 + s + ms / 1000.0;
+      final t1 = toSec(int.parse(timeMatch.group(1)!), int.parse(timeMatch.group(2)!),
+          int.parse(timeMatch.group(3)!), int.parse(timeMatch.group(4)!));
+      final t2 = toSec(int.parse(timeMatch.group(5)!), int.parse(timeMatch.group(6)!),
+          int.parse(timeMatch.group(7)!), int.parse(timeMatch.group(8)!));
 
-      final start = toAssTime(
-        timeMatch.group(1)!, timeMatch.group(2)!,
-        timeMatch.group(3)!, timeMatch.group(4)!,
-      );
-      final end = toAssTime(
-        timeMatch.group(5)!, timeMatch.group(6)!,
-        timeMatch.group(7)!, timeMatch.group(8)!,
-      );
+      // 자막 텍스트 이스케이프 (FFmpeg drawtext 규칙)
+      // text 값 안에서: \ → \\ , ' → 제거, : → \:
+      var txt = lines.sublist(2).join(' ').trim();
+      txt = txt.replaceAll('\\', '\\\\');
+      txt = txt.replaceAll("'", '');       // 작은따옴표는 구분자 충돌로 제거
+      txt = txt.replaceAll(':', '\\:');
+      txt = txt.replaceAll('%', '\\%');
 
-      // 텍스트: 여러 줄이면 \N (ASS 줄바꿈)
-      final text = lines.sublist(2).join('\\N');
+      // drawtext 필터
+      // box=1 일 때 boxcolor로 배경 박스 적용
+      // boxcolor 형식: 0xRRGGBBAA (16진수, AA=불투명도 00=투명 FF=불투명)
+      // _subtitleBgOpacity: 0=배경없음(외곽선만), 1~100=박스 불투명도
+      final alphaHex = _subtitleBgOpacity == 0
+          ? '00'
+          : ((_subtitleBgOpacity / 100.0) * 255).round()
+              .toRadixString(16)
+              .padLeft(2, '0')
+              .toUpperCase();
+      final boxArg = _subtitleBgOpacity == 0
+          ? '' // 배경 없음 - 외곽선만
+          : ':box=1:boxcolor=0x000000$alphaHex:boxborderw=18';
+      final borderArg = ':borderw=3:bordercolor=black';
 
-      eventsBuffer.writeln('Dialogue: 0,$start,$end,Default,,0,0,0,,{\\an2}$text');
+      final f = "drawtext=fontsize=$fontSize"
+          "$fontArg"
+          ":fontcolor=white"
+          "$borderArg"
+          ":text='$txt'"
+          ":x=(w-text_w)/2"
+          ":y=h-text_h-70"
+          "$boxArg"
+          ":enable='between(t,$t1,$t2)'";
+      filters.add(f);
     }
-
-    return eventsBuffer.toString();
+    return filters;
   }
 
   // 오디오 바이트로 재생 시간(초) 계산
@@ -1899,6 +1918,60 @@ ${_includeIntro ? """[인트로 추가]
                     style: GoogleFonts.notoSansKr(
                         color: AppTheme.textHint, fontSize: 9, height: 1.5),
                   ),
+                ),
+                const SizedBox(height: 12),
+                // ── 자막 배경 불투명도 ──
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _label('자막 배경 불투명도'),
+                        const SizedBox(height: 2),
+                        Text(
+                          _subtitleBgOpacity == 0
+                              ? '배경 없음 (외곽선만)'
+                              : '$_subtitleBgOpacity% 불투명 검정 박스',
+                          style: GoogleFonts.notoSansKr(
+                              color: AppTheme.textHint, fontSize: 9),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: _subtitleBgOpacity == 0
+                            ? AppTheme.border.withValues(alpha: 0.3)
+                            : Colors.black.withValues(alpha: _subtitleBgOpacity / 100.0),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: AppTheme.border),
+                      ),
+                      child: Text(
+                        _subtitleBgOpacity == 0 ? '없음' : '$_subtitleBgOpacity%',
+                        style: GoogleFonts.notoSansKr(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+                Slider(
+                  value: _subtitleBgOpacity.toDouble(),
+                  min: 0,
+                  max: 100,
+                  divisions: 10,
+                  activeColor: Colors.grey[700],
+                  inactiveColor: AppTheme.border,
+                  onChanged: (v) => setState(() => _subtitleBgOpacity = v.toInt()),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('0% (외곽선만)', style: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 10)),
+                    Text('100% (완전불투명)', style: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 10)),
+                  ],
                 ),
                 // ── 자막 미리보기 (16:9 / 9:16) ──
                 const SizedBox(height: 10),
