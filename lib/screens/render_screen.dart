@@ -1055,30 +1055,85 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
   }
 
   /// SRT 자막을 filter_complex 체인으로 만드는 헬퍼
-  /// workingDirectory 기준 상대경로(파일명)만 사용
-  /// 반환값 예: "subtitles=subtitles.srt:force_style='...'"
+  /// ASS 파일로 변환 후 subtitles 필터 사용 (박스 배경 완벽 지원)
   String _buildSrtFilterChain(String srtPath) {
+    try {
+      final srtFile = File(srtPath);
+      if (!srtFile.existsSync()) return 'null';
+
+      // SRT → ASS 변환 후 같은 디렉토리에 저장
+      final assPath = srtPath.replaceAll('.srt', '.ass');
+      final srtContent = srtFile.readAsStringSync();
+      final assContent = _convertSrtToAss(srtContent);
+      File(assPath).writeAsStringSync(assContent);
+
+      // ASS 파일명만 사용 (workingDirectory 기준 상대경로)
+      final assFileName = assPath.split(Platform.pathSeparator).last;
+      return 'ass=$assFileName';
+    } catch (e) {
+      return 'null';
+    }
+  }
+
+  /// SRT → ASS 변환 (박스 배경 스타일 포함)
+  String _convertSrtToAss(String srtContent) {
     final fontSize = _subtitleFontSize.toInt();
-    final fontName = _subtitleFont;
-    final srtFileName = srtPath.split(Platform.pathSeparator).last;
-    // ASS 스타일:
-    //   BorderStyle=3 → 불투명 박스 배경 (박스 자막)
-    //   BackColour=&H99000000 → 60% 불투명 검정 박스
-    //   PrimaryColour=&H00FFFFFF → 흰색 텍스트
-    //   Outline=0, Shadow=0 → 아웃라인/그림자 비활성화 (박스 모드에서 불필요)
-    //   MarginV=40 → 하단 여백
-    //   Alignment=2 → 하단 가운데 정렬
-    final forceStyle =
-        'FontName=$fontName'
-        ',FontSize=$fontSize'
-        ',PrimaryColour=&H00FFFFFF'
-        ',BackColour=&H99000000'
-        ',BorderStyle=3'
-        ',Outline=0'
-        ',Shadow=0'
-        ',MarginV=40'
-        ',Alignment=2';
-    return "subtitles=$srtFileName:force_style='$forceStyle'";
+
+    // ASS 헤더: 박스 배경(BorderStyle=3), 흰색 텍스트, 반투명 검정 박스
+    // ASS 색상: &HAABBGGRR (알파, 파랑, 초록, 빨강)
+    // 흰색: &H00FFFFFF  (알파00=완전불투명, 흰색)
+    // 검정박스: &H99000000 (알파99=40%불투명, 검정)
+    final assHeader = '''[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Malgun Gothic,$fontSize,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,0,0,0,0,100,100,0,0,3,0,0,2,10,10,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+''';
+
+    final eventsBuffer = StringBuffer(assHeader);
+
+    // SRT 블록 파싱
+    final blocks = srtContent.trim().split(RegExp(r'\r?\n\r?\n'));
+    for (final block in blocks) {
+      final lines = block.trim().split(RegExp(r'\r?\n'));
+      if (lines.length < 3) continue;
+
+      final timeLine = lines[1];
+      final timeMatch = RegExp(
+        r'(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)',
+      ).firstMatch(timeLine);
+      if (timeMatch == null) continue;
+
+      // ASS 시간 형식: H:MM:SS.cs (센티초 2자리)
+      String toAssTime(String h, String m, String s, String ms) {
+        final msInt = int.parse(ms);
+        final cs = (msInt / 10).round().toString().padLeft(2, '0');
+        return '$h:${m.padLeft(2,'0')}:${s.padLeft(2,'0')}.$cs';
+      }
+
+      final start = toAssTime(
+        timeMatch.group(1)!, timeMatch.group(2)!,
+        timeMatch.group(3)!, timeMatch.group(4)!,
+      );
+      final end = toAssTime(
+        timeMatch.group(5)!, timeMatch.group(6)!,
+        timeMatch.group(7)!, timeMatch.group(8)!,
+      );
+
+      // 텍스트: 여러 줄이면 \N (ASS 줄바꿈)
+      final text = lines.sublist(2).join('\\N');
+
+      eventsBuffer.writeln('Dialogue: 0,$start,$end,Default,,0,0,0,,{\\an2}$text');
+    }
+
+    return eventsBuffer.toString();
   }
 
   // 오디오 바이트로 재생 시간(초) 계산
