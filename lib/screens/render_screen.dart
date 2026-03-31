@@ -224,6 +224,8 @@ class _RenderingTabState extends State<_RenderingTab> {
   bool _isDirectRender = true;    // true=MP4 직접 생성, false=ZIP 패키지
   String _directRenderStatus = ''; // 직접 렌더링 상태 메시지
   String _lastOutputMp4 = '';     // 최종 저장된 MP4 경로
+  Process? _ffmpegProcess;        // 실행 중인 FFmpeg 프로세스 (취소용)
+  bool _isRenderCancelled = false; // 렌더링 취소 플래그
 
   // 자막 설정
   double _subtitleFontSize = 24.0;
@@ -276,34 +278,35 @@ class _RenderingTabState extends State<_RenderingTab> {
 
   // 장면 수만큼 랜덤 효과 필터 생성 (Mac/Linux 쉘 스크립트용 - \ 이스케이프 포함)
   String _buildRandomEffectFilter(int sceneCount) {
-    // ZIP/쉘 스크립트용 filter_complex 문자열 생성
-    // zoompan 제거 → scale+crop 기반 Ken Burns (훨씬 빠름)
-    final effects = [
-      // 줌인 (중앙)
-      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
-          'crop=w=trunc((2112-(2112-1920)*on/$d)/2)*2:h=trunc((1188-(1188-1080)*on/$d)/2)*2'
-          ':x=(2112-trunc((2112-(2112-1920)*on/$d)/2)*2)/2'
-          ':y=(1188-trunc((1188-(1188-1080)*on/$d)/2)*2)/2,'
-          'scale=1920:1080,setsar=1,format=yuv420p',
-      // 줌아웃 (중앙)
-      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
-          'crop=w=trunc((1920+(2112-1920)*on/$d)/2)*2:h=trunc((1080+(1188-1080)*on/$d)/2)*2'
-          ':x=(2112-trunc((1920+(2112-1920)*on/$d)/2)*2)/2'
-          ':y=(1188-trunc((1080+(1188-1080)*on/$d)/2)*2)/2,'
-          'scale=1920:1080,setsar=1,format=yuv420p',
-      // 오른쪽 패닝
-      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=trunc(192*on/$d/2)*2:y=0,setsar=1,format=yuv420p',
-      // 왼쪽 패닝
-      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=trunc(192*(1-on/$d)/2)*2:y=0,setsar=1,format=yuv420p',
-      // 아래 패닝
-      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=0:y=trunc(108*on/$d/2)*2,setsar=1,format=yuv420p',
-      // 위 패닝
-      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=0:y=trunc(108*(1-on/$d)/2)*2,setsar=1,format=yuv420p',
-    ];
+    // ZIP/쉘 스크립트용 — min(on,d-1)으로 루프 시 프레임 초과 방지
+    String kenBurns(int d, String effect) {
+      final n = 'min(on,$d-1)';
+      switch (effect) {
+        case 'zoomin':
+          return 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
+              'crop=w=trunc((2112-(192*$n/$d))/2)*2:h=trunc((1188-(108*$n/$d))/2)*2'
+              ':x=trunc(96*$n/$d/2)*2:y=trunc(54*$n/$d/2)*2,'
+              'scale=1920:1080,setsar=1,format=yuv420p';
+        case 'zoomout':
+          return 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
+              'crop=w=trunc((1920+(192*$n/$d))/2)*2:h=trunc((1080+(108*$n/$d))/2)*2'
+              ':x=trunc((96-96*$n/$d)/2)*2:y=trunc((54-54*$n/$d)/2)*2,'
+              'scale=1920:1080,setsar=1,format=yuv420p';
+        case 'panright':
+          return 'scale=2112:1080:force_original_aspect_ratio=increase,'
+              'crop=1920:1080:x=trunc(192*$n/$d/2)*2:y=0,setsar=1,format=yuv420p';
+        case 'panleft':
+          return 'scale=2112:1080:force_original_aspect_ratio=increase,'
+              'crop=1920:1080:x=trunc(192*(1-$n/$d)/2)*2:y=0,setsar=1,format=yuv420p';
+        case 'pandown':
+          return 'scale=1920:1188:force_original_aspect_ratio=increase,'
+              'crop=1920:1080:x=0:y=trunc(108*$n/$d/2)*2,setsar=1,format=yuv420p';
+        default: // panup
+          return 'scale=1920:1188:force_original_aspect_ratio=increase,'
+              'crop=1920:1080:x=0:y=trunc(108*(1-$n/$d)/2)*2,setsar=1,format=yuv420p';
+      }
+    }
+    const effectNames = ['zoomin','zoomout','panright','panleft','pandown','panup'];
     final seed = DateTime.now().millisecondsSinceEpoch;
     final filters = StringBuffer();
     int lastIdx = -1;
@@ -311,10 +314,9 @@ class _RenderingTabState extends State<_RenderingTab> {
       final scene = widget.project.scenes[i];
       final d = (scene.duration * 25).toInt().clamp(1, 99999);
       int idx;
-      do { idx = (seed ~/ (i + 1) + i * 3) % effects.length; } while (idx == lastIdx && effects.length > 1);
+      do { idx = (seed ~/ (i + 1) + i * 3) % effectNames.length; } while (idx == lastIdx && effectNames.length > 1);
       lastIdx = idx;
-      final f = effects[idx](d);
-      // scale/pad로 1920x1080 정규화 후 Ken Burns 효과 적용
+      final f = kenBurns(d, effectNames[idx]);
       filters.write('[$i:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
           'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,$f[v$i];');
     }
@@ -729,12 +731,13 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
 
       // ── FFmpeg 실행 ──
       setState(() { _renderProgress = 0.35; _renderLog += '[3/5] FFmpeg 렌더링 중... (시간이 걸립니다)\n'; });
-      final process = await Process.start(_ffmpegPath, ffmpegArgs, workingDirectory: tempDir.path);
+      _isRenderCancelled = false;
+      _ffmpegProcess = await Process.start(_ffmpegPath, ffmpegArgs, workingDirectory: tempDir.path);
 
       // stderr에서 진행률 파싱 (FFmpeg는 stderr로 출력)
       final totalDur = scenes.fold<double>(0.0, (s, e) => s + e.duration);
       final stderrBuffer = StringBuffer();
-      process.stderr.transform(const SystemEncoding().decoder).listen((data) {
+      _ffmpegProcess!.stderr.transform(const SystemEncoding().decoder).listen((data) {
         stderrBuffer.write(data);
         // time=HH:MM:SS.ss 파싱
         final timeMatch = RegExp(r'time=(\d+):(\d+):(\d+\.\d+)').firstMatch(data);
@@ -756,7 +759,20 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         }
       });
 
-      final exitCode = await process.exitCode;
+      final exitCode = await _ffmpegProcess!.exitCode;
+      _ffmpegProcess = null;
+
+      // 취소된 경우
+      if (_isRenderCancelled) {
+        if (mounted) setState(() {
+          _isRendering = false;
+          _renderProgress = 0.0;
+          _renderLog += '⏹ 렌더링이 취소되었습니다.\n';
+          _directRenderStatus = '⏹ 취소됨';
+        });
+        return;
+      }
+
       if (exitCode != 0) {
         // stderr 전체 로그 표시
         final errLog = stderrBuffer.toString();
@@ -822,43 +838,55 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     // ── 공통 장면 필터 생성 (따옴표 없는 안전한 버전) ──
     // ── 랜덤 카메라 효과 필터 목록 (Process.start 인수 배열용 → 따옴표 불필요) ──
     // ── 랜덤 카메라 효과 (Ken Burns) ──
-    // zoompan 필터는 매 프레임 소프트웨어 연산으로 극도로 느림 (12초→수분 소요).
-    // 대신 scale+crop 조합으로 구현: GPU 가속 가능, 훨씬 빠름.
-    // 원리: 1920x1080보다 약간 큰 크기로 scale → 시작/끝 crop 좌표를 선형 보간하여
-    //        pan/zoom 효과를 만들고 최종 1920x1080으로 출력.
-    // on=현재프레임번호, d=총프레임수
-    // 확대된 소스 크기: 2112x1188 (1920*1.1 × 1080*1.1, 10% 여유)
+    // 원리: 이미지를 1.1배 크게 scale → crop 좌표를 프레임에 따라 선형 이동
+    // 핵심: on=현재프레임(루프 시 계속 증가) → min(on,d-1)으로 d 초과 방지
+    //       d=총프레임수, 모든 수식은 짝수 보장을 위해 trunc(x/2)*2 사용
+    // 크기: 원본 1920x1080 → 확대 2112x1188 (10% 여유)
     final _randomEffects = [
-      // 줌인 (중앙) — crop 크기를 점점 줄여서 zoom-in 효과
-      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,'
-          'crop=2112:1188,'
-          'crop=w=trunc((2112-(2112-1920)*on/$d)/2)*2:h=trunc((1188-(1188-1080)*on/$d)/2)*2'
-          ':x=(2112-trunc((2112-(2112-1920)*on/$d)/2)*2)/2'
-          ':y=(1188-trunc((1188-(1188-1080)*on/$d)/2)*2)/2,'
-          'scale=1920:1080,setsar=1,format=yuv420p',
-      // 줌아웃 (중앙) — crop 크기를 점점 키워서 zoom-out 효과
-      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,'
-          'crop=2112:1188,'
-          'crop=w=trunc((1920+(2112-1920)*on/$d)/2)*2:h=trunc((1080+(1188-1080)*on/$d)/2)*2'
-          ':x=(2112-trunc((1920+(2112-1920)*on/$d)/2)*2)/2'
-          ':y=(1188-trunc((1080+(1188-1080)*on/$d)/2)*2)/2,'
-          'scale=1920:1080,setsar=1,format=yuv420p',
-      // 오른쪽 패닝 — x 좌→우
-      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=trunc(192*on/$d/2)*2:y=0,'
-          'setsar=1,format=yuv420p',
-      // 왼쪽 패닝 — x 우→좌
-      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=trunc(192*(1-on/$d)/2)*2:y=0,'
-          'setsar=1,format=yuv420p',
-      // 아래 패닝 — y 위→아래
-      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=0:y=trunc(108*on/$d/2)*2,'
-          'setsar=1,format=yuv420p',
-      // 위 패닝 — y 아래→위
-      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
-          'crop=1920:1080:x=0:y=trunc(108*(1-on/$d)/2)*2,'
-          'setsar=1,format=yuv420p',
+      // 줌인: crop 크기 2112→1920, 1188→1080 (점점 좁아짐 = 확대 효과)
+      (int d) {
+        final n = 'min(on\\,$d-1)';
+        return 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
+            'crop=w=trunc((2112-(192*$n/$d))/2)*2:h=trunc((1188-(108*$n/$d))/2)*2'
+            ':x=trunc(96*$n/$d/2)*2:y=trunc(54*$n/$d/2)*2,'
+            'scale=1920:1080,setsar=1,format=yuv420p';
+      },
+      // 줌아웃: crop 크기 1920→2112, 1080→1188 (점점 넓어짐 = 축소 효과)
+      (int d) {
+        final n = 'min(on\\,$d-1)';
+        return 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
+            'crop=w=trunc((1920+(192*$n/$d))/2)*2:h=trunc((1080+(108*$n/$d))/2)*2'
+            ':x=trunc((96-96*$n/$d)/2)*2:y=trunc((54-54*$n/$d)/2)*2,'
+            'scale=1920:1080,setsar=1,format=yuv420p';
+      },
+      // 오른쪽 패닝: x 0 → 192
+      (int d) {
+        final n = 'min(on\\,$d-1)';
+        return 'scale=2112:1080:force_original_aspect_ratio=increase,'
+            'crop=1920:1080:x=trunc(192*$n/$d/2)*2:y=0,'
+            'setsar=1,format=yuv420p';
+      },
+      // 왼쪽 패닝: x 192 → 0
+      (int d) {
+        final n = 'min(on\\,$d-1)';
+        return 'scale=2112:1080:force_original_aspect_ratio=increase,'
+            'crop=1920:1080:x=trunc(192*(1-$n/$d)/2)*2:y=0,'
+            'setsar=1,format=yuv420p';
+      },
+      // 아래 패닝: y 0 → 108
+      (int d) {
+        final n = 'min(on\\,$d-1)';
+        return 'scale=1920:1188:force_original_aspect_ratio=increase,'
+            'crop=1920:1080:x=0:y=trunc(108*$n/$d/2)*2,'
+            'setsar=1,format=yuv420p';
+      },
+      // 위 패닝: y 108 → 0
+      (int d) {
+        final n = 'min(on\\,$d-1)';
+        return 'scale=1920:1188:force_original_aspect_ratio=increase,'
+            'crop=1920:1080:x=0:y=trunc(108*(1-$n/$d)/2)*2,'
+            'setsar=1,format=yuv420p';
+      },
     ];
 
     // 장면별 필터 생성: 랜덤 효과 ON/OFF 분기
@@ -1817,25 +1845,48 @@ ${_includeIntro ? """[인트로 추가]
 
                 // MP4 직접 렌더링 버튼 (FFmpeg 있을 때)
                 if (!kIsWeb && Platform.isWindows && _ffmpegFound) ...[
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _isRendering ? null : _startDirectRender,
-                      icon: _isRendering && _isDirectRender
-                          ? const SizedBox(
-                              width: 16, height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Icon(Icons.movie_creation_rounded, size: 22),
-                      label: Text(
-                        (_isRendering && _isDirectRender) ? '🎬 MP4 렌더링 중...' : '🎬 MP4 직접 렌더링 (추천)',
-                        style: GoogleFonts.notoSansKr(fontSize: 15, fontWeight: FontWeight.bold),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _isRendering ? null : _startDirectRender,
+                          icon: _isRendering && _isDirectRender
+                              ? const SizedBox(
+                                  width: 16, height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.movie_creation_rounded, size: 22),
+                          label: Text(
+                            (_isRendering && _isDirectRender) ? '🎬 MP4 렌더링 중...' : '🎬 MP4 직접 렌더링 (추천)',
+                            style: GoogleFonts.notoSansKr(fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00C896),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                        ),
                       ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF00C896),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                    ),
+                      // 렌더링 중일 때만 취소 버튼 표시
+                      if (_isRendering && _isDirectRender) ...[
+                        const SizedBox(width: 8),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _isRenderCancelled = true;
+                              _directRenderStatus = '⏹ 취소 중...';
+                            });
+                            _ffmpegProcess?.kill();
+                          },
+                          icon: const Icon(Icons.stop_rounded, size: 20),
+                          label: Text('취소', style: GoogleFonts.notoSansKr(fontSize: 13, fontWeight: FontWeight.bold)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.error,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 14),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 8),
                   // 직접 렌더링 상태 메시지
@@ -1845,7 +1896,7 @@ ${_includeIntro ? """[인트로 추가]
                       style: GoogleFonts.notoSansKr(
                         color: _directRenderStatus.startsWith('✅')
                             ? AppTheme.success
-                            : _directRenderStatus.startsWith('❌')
+                            : _directRenderStatus.startsWith('❌') || _directRenderStatus.startsWith('⏹')
                                 ? AppTheme.error
                                 : AppTheme.textSecondary,
                         fontSize: 12,
