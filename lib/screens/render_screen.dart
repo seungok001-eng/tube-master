@@ -720,11 +720,36 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
         await File(ttsFilePath).writeAsBytes(wavBytes);
       }
 
+      // ── SRT 자막 파일 생성 → tempDir에 저장 ──
+      setState(() { _renderLog += '[자막] SRT 파일 생성 중...\n'; });
+      final srtBuffer = StringBuffer();
+      double srtElapsed = 0.0;
+      int srtIdx = 1;
+      for (int i = 0; i < scenes.length; i++) {
+        final sceneDur = scenes[i].duration;
+        final text = scenes[i].scriptText.trim();
+        final chunks = _splitSubtitle(text, _subtitleMaxChars);
+        final chunkDur = sceneDur / chunks.length;
+        for (int c = 0; c < chunks.length; c++) {
+          final start = _formatSrtTime(srtElapsed + c * chunkDur);
+          final end   = _formatSrtTime(srtElapsed + (c + 1) * chunkDur - 0.05);
+          srtBuffer.writeln(srtIdx++);
+          srtBuffer.writeln('$start --> $end');
+          srtBuffer.writeln(chunks[c]);
+          srtBuffer.writeln();
+        }
+        srtElapsed += sceneDur;
+      }
+      final srtFilePath = '${tempDir.path}\\subtitles.srt';
+      await File(srtFilePath).writeAsString(srtBuffer.toString(), encoding: utf8);
+      setState(() { _renderLog += '[자막] subtitles.srt 저장 완료 (${srtIdx - 1}개 항목)\n'; });
+
       // ── FFmpeg 명령 구성 ──
       setState(() { _renderProgress = 0.3; _renderLog += '[2/5] FFmpeg 명령 구성 중...\n'; });
       final ffmpegArgs = _buildFfmpegArgs(
         tempDir.path, scenesDir.path, outputPath,
         hasPerSceneTts: hasPerSceneTts, ttsFilePath: ttsFilePath,
+        srtPath: srtFilePath,
       );
       // 전체 FFmpeg 명령어 로그 출력 (디버깅용)
       setState(() => _renderLog += '[FFmpeg 전체 명령]\n${_ffmpegPath} ${ffmpegArgs.join(" ")}\n\n');
@@ -830,6 +855,7 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
     String workDir, String scenesDir, String outputPath, {
     required bool hasPerSceneTts,
     required String ttsFilePath,
+    String srtPath = '',  // 자막 SRT 파일 경로 (비어있으면 자막 미적용)
   }) {
     final scenes = widget.project.scenes;
     final sceneCount = scenes.length;
@@ -949,10 +975,20 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           audConcat.write('[sa$i]');
         }
       }
-      filterParts.write('${vidConcat}concat=n=$sceneCount:v=1:a=0[vid];');
+      filterParts.write('${vidConcat}concat=n=$sceneCount:v=1:a=0[vidraw];');
       filterParts.write('${audConcat}concat=n=$sceneCount:v=0:a=1[aud]');
-      args.addAll(['-filter_complex', filterParts.toString()]);
-      args.addAll(['-map', '[vid]', '-map', '[aud]']);
+      // 자막 필터: filter_complex 끝에 subtitles 체인 추가
+      if (srtPath.isNotEmpty) {
+        final srtFilter = _buildSrtFilterChain(srtPath);
+        final finalFilter = '${filterParts.toString()};[vidraw]$srtFilter[vout]';
+        args.addAll(['-filter_complex', finalFilter]);
+        args.addAll(['-map', '[vout]', '-map', '[aud]']);
+      } else {
+        // [vidraw]를 최종 출력으로 그대로 사용
+        final baseFilter = filterParts.toString().replaceAll('[vidraw]', '[vid]');
+        args.addAll(['-filter_complex', baseFilter]);
+        args.addAll(['-map', '[vid]', '-map', '[aud]']);
+      }
     } else if (ttsFilePath.isNotEmpty) {
       // 이미지들 + 합본 TTS
       for (int i = 0; i < sceneCount; i++) {
@@ -969,9 +1005,16 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       args.addAll(['-i', ttsFilePath]);
       final perScene = List.generate(sceneCount, (i) => makeVideoFilter(i, i)).join(';');
       final concatIn = List.generate(sceneCount, (i) => '[sv$i]').join('');
-      final filterStr = '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]';
-      args.addAll(['-filter_complex', filterStr]);
-      args.addAll(['-map', '[vid]', '-map', '${sceneCount}:a']);
+      if (srtPath.isNotEmpty) {
+        final srtFilter = _buildSrtFilterChain(srtPath);
+        final filterStr = '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vidraw];[vidraw]$srtFilter[vout]';
+        args.addAll(['-filter_complex', filterStr]);
+        args.addAll(['-map', '[vout]', '-map', '${sceneCount}:a']);
+      } else {
+        final filterStr = '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]';
+        args.addAll(['-filter_complex', filterStr]);
+        args.addAll(['-map', '[vid]', '-map', '${sceneCount}:a']);
+      }
     } else {
       // TTS 없음 - 영상만
       for (int i = 0; i < sceneCount; i++) {
@@ -985,10 +1028,17 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
           args.addAll(['-f', 'lavfi', '-t', dur, '-i', 'color=black:s=1920x1080:r=25']);
         }
       }
-      final perScene = List.generate(sceneCount, (i) => makeVideoFilter(i, i)).join(';');
-      final concatIn = List.generate(sceneCount, (i) => '[sv$i]').join('');
-      args.addAll(['-filter_complex', '$perScene;${concatIn}concat=n=$sceneCount:v=1:a=0[vid]']);
-      args.addAll(['-map', '[vid]']);
+      final perScene2 = List.generate(sceneCount, (i) => makeVideoFilter(i, i)).join(';');
+      final concatIn2 = List.generate(sceneCount, (i) => '[sv$i]').join('');
+      if (srtPath.isNotEmpty) {
+        final srtFilter = _buildSrtFilterChain(srtPath);
+        final filterStr2 = '$perScene2;${concatIn2}concat=n=$sceneCount:v=1:a=0[vidraw];[vidraw]$srtFilter[vout]';
+        args.addAll(['-filter_complex', filterStr2]);
+        args.addAll(['-map', '[vout]']);
+      } else {
+        args.addAll(['-filter_complex', '$perScene2;${concatIn2}concat=n=$sceneCount:v=1:a=0[vid]']);
+        args.addAll(['-map', '[vid]']);
+      }
     }
 
     // 공통 출력 옵션
@@ -1002,6 +1052,33 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       outputPath,
     ]);
     return args;
+  }
+
+  /// SRT 자막을 filter_complex 체인으로 만드는 헬퍼
+  /// workingDirectory 기준 상대경로(파일명)만 사용
+  /// 반환값 예: "subtitles=subtitles.srt:force_style='...'"
+  String _buildSrtFilterChain(String srtPath) {
+    final fontSize = _subtitleFontSize.toInt();
+    final fontName = _subtitleFont;
+    final srtFileName = srtPath.split(Platform.pathSeparator).last;
+    // ASS 스타일:
+    //   BorderStyle=3 → 불투명 박스 배경 (박스 자막)
+    //   BackColour=&H99000000 → 60% 불투명 검정 박스
+    //   PrimaryColour=&H00FFFFFF → 흰색 텍스트
+    //   Outline=0, Shadow=0 → 아웃라인/그림자 비활성화 (박스 모드에서 불필요)
+    //   MarginV=40 → 하단 여백
+    //   Alignment=2 → 하단 가운데 정렬
+    final forceStyle =
+        'FontName=$fontName'
+        ',FontSize=$fontSize'
+        ',PrimaryColour=&H00FFFFFF'
+        ',BackColour=&H99000000'
+        ',BorderStyle=3'
+        ',Outline=0'
+        ',Shadow=0'
+        ',MarginV=40'
+        ',Alignment=2';
+    return "subtitles=$srtFileName:force_style='$forceStyle'";
   }
 
   // 오디오 바이트로 재생 시간(초) 계산
