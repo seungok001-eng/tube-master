@@ -429,6 +429,78 @@ extension ImageStyleExt on ImageStyle {
       case ImageStyle.pixelArt:       return 'pixel art style, retro 8-bit/16-bit game graphics, pixelated, classic video game aesthetic';
     }
   }
+
+  /// 스타일 미리보기 이미지 URL (공개 이미지)
+  String get previewImageUrl {
+    switch (this) {
+      case ImageStyle.none:           return '';
+      case ImageStyle.koreanFolktale: return 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/Korean_folk_painting_-_Tiger_and_magpie.jpg/400px-Korean_folk_painting_-_Tiger_and_magpie.jpg';
+      case ImageStyle.minhwa:         return 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/Korean_Minhwa_-_Tiger_and_Magpie_%28Haehakmyeong%29.jpg/400px-Korean_Minhwa_-_Tiger_and_Magpie_%28Haehakmyeong%29.jpg';
+      case ImageStyle.joseon:         return 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/72/Kim_Hongdo-Ssireum.jpg/400px-Kim_Hongdo-Ssireum.jpg';
+      case ImageStyle.dongHwa:        return 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Hamel%27s_Journal_cover.jpg/300px-Hamel%27s_Journal_cover.jpg';
+      case ImageStyle.anime2d:        return 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Katsugeki-Touken-Ranbu-key-visual.jpg/400px-Katsugeki-Touken-Ranbu-key-visual.jpg';
+      case ImageStyle.animeStudio:    return 'https://upload.wikimedia.org/wikipedia/en/thumb/c/ca/My_Neighbor_Totoro_-_Tonari_no_Totoro_%28Movie_Poster%29.jpg/400px-My_Neighbor_Totoro_-_Tonari_no_Totoro_%28Movie_Poster%29.jpg';
+      case ImageStyle.chibi:          return 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/Chibi_characters.jpg/400px-Chibi_characters.jpg';
+      case ImageStyle.webtoon:        return 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/8f/Korean_webtoon_example.jpg/400px-Korean_webtoon_example.jpg';
+      case ImageStyle.cartoon2d:      return 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat_03.jpg/400px-Cat_03.jpg';
+      case ImageStyle.cartoon3d:      return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/Pixar_Lightbulb.jpg/400px-Pixar_Lightbulb.jpg';
+      case ImageStyle.stickFigure:    return 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/16/Stickfigure.png/300px-Stickfigure.png';
+      case ImageStyle.flatDesign:     return 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Camponotus_flavomarginatus_ant.jpg/400px-Camponotus_flavomarginatus_ant.jpg';
+      case ImageStyle.infographic:    return 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/400px-PNG_transparency_demonstration_1.png';
+      case ImageStyle.paperCraft:     return 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b6/Origami_crane.jpg/400px-Origami_crane.jpg';
+      case ImageStyle.watercolor:     return 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg/400px-Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg';
+      case ImageStyle.oilPainting:    return 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/ea/Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg/400px-Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg';
+      case ImageStyle.sketchPencil:   return 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2a/The_Last_Supper_-_Leonardo_Da_Vinci_-_High_Resolution_32x16.jpg/400px-The_Last_Supper_-_Leonardo_Da_Vinci_-_High_Resolution_32x16.jpg';
+      case ImageStyle.comicBook:      return 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/DC_Comics_logo.svg/400px-DC_Comics_logo.svg.png';
+      case ImageStyle.realistic:      return 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/400px-PNG_transparency_demonstration_1.png';
+      case ImageStyle.cinematic:      return 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/07/Tor_Forsberg.jpg/400px-Tor_Forsberg.jpg';
+      case ImageStyle.documentary:    return 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Camponotus_flavomarginatus_ant.jpg/400px-Camponotus_flavomarginatus_ant.jpg';
+      case ImageStyle.noir:           return 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Film_noir_film_still.jpg/400px-Film_noir_film_still.jpg';
+      case ImageStyle.vintage:        return 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4f/Vintage_photograph.jpg/400px-Vintage_photograph.jpg';
+      case ImageStyle.dramatic:       return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/57/Macbeth_consulting_the_vision_of_the_armed_head.jpg/400px-Macbeth_consulting_the_vision_of_the_armed_head.jpg';
+      case ImageStyle.scienceFiction: return 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/03/Cyberpunk_artwork.jpg/400px-Cyberpunk_artwork.jpg';
+      case ImageStyle.fantasy:        return 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Fantasy_landscape.jpg/400px-Fantasy_landscape.jpg';
+      case ImageStyle.horror:         return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/Gothic_horror_illustration.jpg/400px-Gothic_horror_illustration.jpg';
+      case ImageStyle.miniature:      return 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2a/Tilt_shift_photography.jpg/400px-Tilt_shift_photography.jpg';
+      case ImageStyle.pixelArt:       return 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4f/8bit_art.png/400px-8bit_art.png';
+    }
+  }
+
+  /// 스타일 설명 (한국어)
+  String get description {
+    switch (this) {
+      case ImageStyle.none:           return '스타일 없음 - AI가 기본 스타일로 생성합니다';
+      case ImageStyle.koreanFolktale: return '한국 전통 설화·야담 풍의 수묵화 일러스트. 먹빛 붓터치와 은은한 색감';
+      case ImageStyle.minhwa:         return '조선시대 민화 스타일. 호랑이·새·꽃 등 전통 소재를 강렬한 원색으로';
+      case ImageStyle.joseon:         return '조선시대 목판화 흑백 일러스트. 전통적 선 표현과 역사적 분위기';
+      case ImageStyle.dongHwa:        return '한국 동화책 삽화 스타일. 따뜻하고 부드러운 색감의 어린이용 일러스트';
+      case ImageStyle.anime2d:        return '일본 2D 애니메이션 스타일. 선명한 윤곽선과 생생한 색채';
+      case ImageStyle.animeStudio:    return '지브리 스튜디오 풍 애니메이션. 수채화 배경과 따뜻한 자연 묘사';
+      case ImageStyle.chibi:          return '치비·SD 캐릭터 스타일. 큰 눈과 작은 몸의 귀여운 2등신 캐릭터';
+      case ImageStyle.webtoon:        return '한국 웹툰 스타일. 깔끔한 디지털 일러스트와 현대적 표현';
+      case ImageStyle.cartoon2d:      return '서양 만화 2D 스타일. 두꺼운 윤곽선과 플랫 컬러의 카툰 느낌';
+      case ImageStyle.cartoon3d:      return '픽사·드림웍스 풍 3D 애니메이션. 고품질 CGI와 입체적 캐릭터';
+      case ImageStyle.stickFigure:    return '졸라맨·스틱 피규어 스타일. 심플한 막대 인형 일러스트';
+      case ImageStyle.flatDesign:     return '플랫 디자인 벡터 아트. 기하학적 형태와 단색 모던 스타일';
+      case ImageStyle.infographic:    return '인포그래픽 스타일. 데이터 시각화와 아이콘 중심의 깔끔한 디자인';
+      case ImageStyle.paperCraft:     return '페이퍼 컷 아트. 레이어드 종이 공예처럼 보이는 독특한 스타일';
+      case ImageStyle.watercolor:     return '수채화 스타일. 부드럽게 번지는 물감의 예술적 일러스트';
+      case ImageStyle.oilPainting:    return '유화 스타일. 두꺼운 붓터치와 풍부한 질감의 고전 회화';
+      case ImageStyle.sketchPencil:   return '연필 스케치 스타일. 손으로 그린 듯한 흑연 드로잉';
+      case ImageStyle.comicBook:      return '코믹북 스타일. 굵은 윤곽선과 역동적인 슈퍼히어로 만화';
+      case ImageStyle.realistic:      return '사진 실사 스타일. 8K 해상도의 초고화질 포토리얼리스틱';
+      case ImageStyle.cinematic:      return '영화적 시네마틱 스타일. 아나모픽 렌즈와 극적인 조명';
+      case ImageStyle.documentary:    return '다큐멘터리 사진 스타일. 자연스러운 조명의 보도 사진풍';
+      case ImageStyle.noir:           return '느와르 흑백 스타일. 극적인 명암 대비의 1940년대 탐정 영화';
+      case ImageStyle.vintage:        return '빈티지·레트로 필름 스타일. 바랜 색감과 필름 그레인';
+      case ImageStyle.dramatic:       return '드라마틱 연극 조명 스타일. 강렬한 스포트라이트와 무대적 분위기';
+      case ImageStyle.scienceFiction: return 'SF·사이버펑크 스타일. 네온 조명과 미래 디스토피아 분위기';
+      case ImageStyle.fantasy:        return '판타지·마법 스타일. 신비로운 빛과 마법적 분위기의 서사적 일러스트';
+      case ImageStyle.horror:         return '공포·다크 판타지 스타일. 불안한 분위기와 고딕 호러';
+      case ImageStyle.miniature:      return '미니어처·틸트시프트 스타일. 장난감처럼 보이는 독특한 원근감';
+      case ImageStyle.pixelArt:       return '픽셀 아트 스타일. 8비트·16비트 레트로 게임 그래픽';
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────

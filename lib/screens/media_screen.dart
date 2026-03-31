@@ -244,6 +244,10 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
   // 캐릭터 참조 목록 (채널 설정에서 로드 + 로컬 관리)
   final List<CharacterReference> _characters = [];
 
+  // ── 공통 프롬프트 (전체 이미지에 적용) ──
+  String _globalPrompt = '';
+  late TextEditingController _globalPromptCtrl;
+
   // ── 이미지 다운로드 관련 ──
   final Set<int> _selectedImages = {};       // 체크박스 선택된 장면 인덱스
   bool _isDownloadMode = false;              // 다운로드 모드 ON/OFF
@@ -272,6 +276,10 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
         .firstOrNull;
     final savedSdUrl = channel?.videoSettings.localSdUrl ?? 'http://127.0.0.1:7860';
     _sdUrlController = TextEditingController(text: savedSdUrl);
+    _globalPromptCtrl = TextEditingController(text: _globalPrompt);
+    _globalPromptCtrl.addListener(() {
+      _globalPrompt = _globalPromptCtrl.text;
+    });
     if (channel != null) {
       _selectedStyle = channel.videoSettings.imageStyle;
       _selectedModel = channel.videoSettings.imageModel;
@@ -289,6 +297,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
   @override
   void dispose() {
     _sdUrlController.dispose();
+    _globalPromptCtrl.dispose();
     _rangeFromCtrl.dispose();
     _rangeToCtrl.dispose();
     super.dispose();
@@ -520,17 +529,41 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
     );
   }
 
+  /// 활성화된 캐릭터 참조 이미지 목록 반환
+  List<Uint8List> get _activeCharacterImages {
+    return _characters
+        .where((c) => c.isActive && c.imageBytes != null && c.imageBytes!.isNotEmpty)
+        .map((c) => Uint8List.fromList(c.imageBytes!))
+        .toList();
+  }
+
   /// 스타일 + 캐릭터 정보를 포함한 최종 프롬프트 생성
   String _buildPrompt(String basePrompt) {
-    final parts = <String>[basePrompt];
+    final parts = <String>[];
 
-    // 활성화된 캐릭터 설명 추가
-    final activeChars = _characters.where((c) => c.isActive && c.description.isNotEmpty).toList();
-    if (activeChars.isNotEmpty) {
-      final charDesc = activeChars
-          .map((c) => '${c.name}: ${c.description}')
-          .join('; ');
+    // 공통 프롬프트 (전체 이미지에 적용)
+    if (_globalPrompt.isNotEmpty) {
+      parts.add(_globalPrompt);
+    }
+
+    parts.add(basePrompt);
+
+    // 활성화된 캐릭터 설명 추가 (이미지가 없는 캐릭터만 텍스트로 추가)
+    final activeCharsNoImage = _characters
+        .where((c) => c.isActive && c.description.isNotEmpty && (c.imageBytes == null || c.imageBytes!.isEmpty))
+        .toList();
+    if (activeCharsNoImage.isNotEmpty) {
+      final charDesc = activeCharsNoImage.map((c) => '${c.name}: ${c.description}').join('; ');
       parts.add('Character reference - $charDesc');
+    }
+
+    // 이미지가 있는 캐릭터는 설명을 간략하게 추가 (참조 이미지와 함께 전달됨)
+    final activeCharsWithImage = _characters
+        .where((c) => c.isActive && c.imageBytes != null && c.imageBytes!.isNotEmpty)
+        .toList();
+    if (activeCharsWithImage.isNotEmpty) {
+      final names = activeCharsWithImage.map((c) => c.name).join(', ');
+      parts.add('Include the character(s) shown in the reference image(s): $names. Keep their appearance exactly as shown.');
     }
 
     // 이미지 스타일 suffix 추가
@@ -573,17 +606,21 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
           : 'Cinematic scene illustration: ${scene.scriptText.substring(0, scene.scriptText.length.clamp(0, 150))}';
       final prompt = _buildPrompt(rawPrompt);
 
+      // 활성화된 캐릭터 참조 이미지 수집
+      final characterRefImages = _activeCharacterImages;
+
       Uint8List bytes;
       if (_selectedModel.isNanoBanana) {
-        // ✅ Nano Banana 계열 전부 → generateContent 직접 호출
+        // ✅ Nano Banana 계열 전부 → generateContent 직접 호출 (참조 이미지 지원)
         bytes = await geminiService.generateImageWithFlash(
           prompt: prompt,
           aspectRatio: _selectedRatio.ratioValue,
           model: _selectedModel.geminiModelId ?? 'gemini-3.1-flash-image-preview',
           imageSize: _selectedResolution,
+          referenceImages: characterRefImages.isNotEmpty ? characterRefImages : null,
         );
       } else if (_selectedModel.isImagen) {
-        // ✅ Imagen 계열 → predict 직접 호출
+        // ✅ Imagen 계열 → predict 직접 호출 (참조 이미지 미지원 - 텍스트 설명만)
         bytes = await geminiService.generateImage(
           prompt: prompt,
           aspectRatio: _selectedRatio.ratioValue,
@@ -666,12 +703,14 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
           sdUrl: ch?.videoSettings.localSdUrl,
         );
       } else if (_selectedModel.isNanoBanana) {
-        // ✅ Nano Banana 계열 → generateContent 직접 호출
+        // ✅ Nano Banana 계열 → generateContent 직접 호출 (참조 이미지 지원)
+        final charRefs = _activeCharacterImages;
         bytes = await GeminiService(apiKey).generateImageWithFlash(
           prompt: prompt,
           aspectRatio: _selectedRatio.ratioValue,
           model: _selectedModel.geminiModelId ?? 'gemini-3.1-flash-image-preview',
           imageSize: _selectedResolution,
+          referenceImages: charRefs.isNotEmpty ? charRefs : null,
         );
       } else if (_selectedModel.isImagen) {
         // ✅ Imagen 계열 → predict 직접 호출
@@ -876,8 +915,59 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
                 _buildResolutionDropdown(),
                 const SizedBox(height: 20),
                 const Divider(),
+                // ── 공통 프롬프트 ──
+                _sectionTitle('✏️ 공통 프롬프트'),
+                const SizedBox(height: 4),
+                Text(
+                  '모든 이미지 생성 시 공통으로 적용할 프롬프트를 입력하세요.\n예: "bright lighting, professional quality, 8K"',
+                  style: GoogleFonts.notoSansKr(
+                      color: AppTheme.textSecondary, fontSize: 10, height: 1.5),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _globalPromptCtrl,
+                  maxLines: 3,
+                  style: GoogleFonts.notoSansKr(color: AppTheme.textPrimary, fontSize: 12),
+                  decoration: InputDecoration(
+                    hintText: '예: bright lighting, high quality, detailed background',
+                    hintStyle: GoogleFonts.notoSansKr(color: AppTheme.textHint, fontSize: 11),
+                    filled: true,
+                    fillColor: AppTheme.bgSurface,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.border),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.primary, width: 1.5),
+                    ),
+                    suffixIcon: _globalPrompt.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear_rounded, size: 16),
+                            color: AppTheme.textHint,
+                            onPressed: () {
+                              _globalPromptCtrl.clear();
+                              setState(() => _globalPrompt = '');
+                            },
+                          )
+                        : null,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Divider(),
                 // ── 이미지 스타일 선택 ──
                 _sectionTitle('🎨 이미지 스타일'),
+                const SizedBox(height: 4),
+                Text(
+                  '버튼을 탭하면 스타일 선택, 길게 누르면 스타일 상세 설명을 볼 수 있습니다.',
+                  style: GoogleFonts.notoSansKr(
+                      color: AppTheme.textSecondary, fontSize: 10, height: 1.5),
+                ),
                 const SizedBox(height: 8),
                 _buildStyleSelector(),
                 const SizedBox(height: 20),
@@ -889,6 +979,44 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
                   '마스코트·졸라맨 등 캐릭터를 등록하면\n이미지 생성 프롬프트에 자동 반영됩니다.',
                   style: GoogleFonts.notoSansKr(
                       color: AppTheme.textSecondary, fontSize: 10, height: 1.5),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: _selectedModel.isNanoBanana
+                        ? Colors.blue.withValues(alpha: 0.08)
+                        : Colors.orange.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: _selectedModel.isNanoBanana
+                          ? Colors.blue.withValues(alpha: 0.3)
+                          : Colors.orange.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _selectedModel.isNanoBanana
+                            ? Icons.check_circle_outline_rounded
+                            : Icons.info_outline_rounded,
+                        size: 12,
+                        color: _selectedModel.isNanoBanana ? Colors.blue : Colors.orange,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          _selectedModel.isNanoBanana
+                              ? '현재 모델(${_selectedModel.displayName})은 캐릭터 참조 이미지를 직접 전달합니다.'
+                              : '현재 모델(${_selectedModel.displayName})은 이미지 참조 미지원. 텍스트 설명만 반영됩니다.',
+                          style: GoogleFonts.notoSansKr(
+                            color: _selectedModel.isNanoBanana ? Colors.blue[300] : Colors.orange[300],
+                            fontSize: 9,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 8),
                 _buildCharacterSection(),
@@ -1801,6 +1929,150 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
   }
 
   // ─────────────────────────────────────────────────
+  // 이미지 스타일 미리보기 다이얼로그
+  // ─────────────────────────────────────────────────
+  void _showStylePreviewDialog(ImageStyle style) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 헤더
+              Row(
+                children: [
+                  Text(style.emoji, style: const TextStyle(fontSize: 24)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          style.displayName,
+                          style: GoogleFonts.notoSansKr(
+                            color: AppTheme.textPrimary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          style.category,
+                          style: GoogleFonts.notoSansKr(
+                            color: AppTheme.primary,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: const Icon(Icons.close_rounded, color: AppTheme.textHint, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // 스타일 설명
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.bgSurface,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.border),
+                ),
+                child: Text(
+                  style.description,
+                  style: GoogleFonts.notoSansKr(
+                    color: AppTheme.textSecondary,
+                    fontSize: 12,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // 프롬프트 키워드
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppTheme.primary.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.primary.withValues(alpha: 0.2)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.auto_fix_high_rounded, size: 12, color: AppTheme.primary),
+                        const SizedBox(width: 4),
+                        Text(
+                          'AI 프롬프트 지시어',
+                          style: GoogleFonts.notoSansKr(
+                            color: AppTheme.primary,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      style == ImageStyle.none ? '(없음)' : style.promptSuffix,
+                      style: GoogleFonts.notoSansKr(
+                        color: AppTheme.textHint,
+                        fontSize: 9,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              // 버튼들
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: AppTheme.border),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      child: Text('닫기', style: GoogleFonts.notoSansKr(color: AppTheme.textSecondary, fontSize: 12)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () {
+                        setState(() => _selectedStyle = style);
+                        _saveSettingsToChannel();
+                        Navigator.pop(ctx);
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.primary,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      child: Text('이 스타일 선택', style: GoogleFonts.notoSansKr(color: Colors.white, fontSize: 12)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────
   // 이미지 스타일 선택 UI
   // ─────────────────────────────────────────────────
   Widget _buildStyleSelector() {
@@ -1884,6 +2156,7 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
                       setState(() => _selectedStyle = style);
                       _saveSettingsToChannel();
                     },
+                    onLongPress: () => _showStylePreviewDialog(style),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                       decoration: BoxDecoration(
@@ -1910,6 +2183,12 @@ class _ImageGenerationTabState extends State<_ImageGenerationTab>
                               fontSize: 10,
                               fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                             ),
+                          ),
+                          const SizedBox(width: 2),
+                          Icon(
+                            Icons.info_outline_rounded,
+                            size: 10,
+                            color: isSelected ? AppTheme.primary : AppTheme.textHint,
                           ),
                         ],
                       ),
