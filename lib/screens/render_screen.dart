@@ -277,37 +277,46 @@ class _RenderingTabState extends State<_RenderingTab> {
   // 장면 수만큼 랜덤 효과 필터 생성 (Mac/Linux 쉘 스크립트용 - \ 이스케이프 포함)
   String _buildRandomEffectFilter(int sceneCount) {
     // ZIP/쉘 스크립트용 filter_complex 문자열 생성
-    // 주의: filter_complex 내에서 ':' 는 FFmpeg 옵션 구분자이므로
-    //       x/y 수식에 '(' 포함 나눗셈 쓰면 파싱 오류 발생.
-    //       scale로 1920×1080 고정 후 상수값 사용 (iw=1920→960, ih=1080→540)
-    //       쉼표는 \, 이스케이프 (쉘 스크립트 이스케이프용)
+    // zoompan 제거 → scale+crop 기반 Ken Burns (훨씬 빠름)
     final effects = [
       // 줌인 (중앙)
-      (int d) => "zoompan=z='min(zoom+0.0015\\,1.3)':x='960-(960/zoom)':y='540-(540/zoom)':d=$d",
+      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
+          'crop=w=trunc((2112-(2112-1920)*on/$d)/2)*2:h=trunc((1188-(1188-1080)*on/$d)/2)*2'
+          ':x=(2112-trunc((2112-(2112-1920)*on/$d)/2)*2)/2'
+          ':y=(1188-trunc((1188-(1188-1080)*on/$d)/2)*2)/2,'
+          'scale=1920:1080,setsar=1,format=yuv420p',
       // 줌아웃 (중앙)
-      (int d) => "zoompan=z='if(eq(on\\,1)\\,1.3\\,max(zoom-0.0015\\,1.0))':x='960-(960/zoom)':y='540-(540/zoom)':d=$d",
+      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,'
+          'crop=w=trunc((1920+(2112-1920)*on/$d)/2)*2:h=trunc((1080+(1188-1080)*on/$d)/2)*2'
+          ':x=(2112-trunc((1920+(2112-1920)*on/$d)/2)*2)/2'
+          ':y=(1188-trunc((1080+(1188-1080)*on/$d)/2)*2)/2,'
+          'scale=1920:1080,setsar=1,format=yuv420p',
       // 오른쪽 패닝
-      (int d) => "zoompan=z=1.1:x='if(eq(on\\,1)\\,0\\,x+2)':y=49:d=$d",
+      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=trunc(192*on/$d/2)*2:y=0,setsar=1,format=yuv420p',
       // 왼쪽 패닝
-      (int d) => "zoompan=z=1.1:x='if(eq(on\\,1)\\,174\\,max(x-2\\,0))':y=49:d=$d",
+      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=trunc(192*(1-on/$d)/2)*2:y=0,setsar=1,format=yuv420p',
       // 아래 패닝
-      (int d) => "zoompan=z=1.1:x=87:y='if(eq(on\\,1)\\,0\\,y+1)':d=$d",
+      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=0:y=trunc(108*on/$d/2)*2,setsar=1,format=yuv420p',
       // 위 패닝
-      (int d) => "zoompan=z=1.1:x=87:y='if(eq(on\\,1)\\,98\\,max(y-1\\,0))':d=$d",
+      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=0:y=trunc(108*(1-on/$d)/2)*2,setsar=1,format=yuv420p',
     ];
     final seed = DateTime.now().millisecondsSinceEpoch;
     final filters = StringBuffer();
     int lastIdx = -1;
     for (int i = 0; i < sceneCount; i++) {
-      // 각 장면마다 해당 장면의 실제 duration 사용
       final scene = widget.project.scenes[i];
       final d = (scene.duration * 25).toInt().clamp(1, 99999);
       int idx;
       do { idx = (seed ~/ (i + 1) + i * 3) % effects.length; } while (idx == lastIdx && effects.length > 1);
       lastIdx = idx;
       final f = effects[idx](d);
-      // scale/pad 먼저 적용 후 zoompan (상수 x/y 사용으로 ':' 충돌 없음)
-      filters.write('[$i:v]format=yuv420p,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,$f,setsar=1[v$i];');
+      // scale/pad로 1920x1080 정규화 후 Ken Burns 효과 적용
+      filters.write('[$i:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+          'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,$f[v$i];');
     }
     final concat = List.generate(sceneCount, (i) => '[v$i]').join('');
     filters.write('${concat}concat=n=$sceneCount:v=1:a=0[vid]');
@@ -812,30 +821,44 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
 
     // ── 공통 장면 필터 생성 (따옴표 없는 안전한 버전) ──
     // ── 랜덤 카메라 효과 필터 목록 (Process.start 인수 배열용 → 따옴표 불필요) ──
-    // Process.start() 인수 배열 방식: 쉘 이스케이프(\ 없이) 직접 FFmpeg 표현식 사용
-    // zoompan 필터: Process.start() 인수 배열 방식 → 이스케이프 불필요
-    // scale→pad→setsar→fps→format→zoompan 순서, s= 옵션 제거 (이중 스케일 충돌 방지)
-    // ── zoompan 필터 수식 규칙 ──
-    // filter_complex 내부에서 ':' 는 FFmpeg 옵션 구분자로 파싱됨.
-    // x/y 수식에서 '(' 와 ')'를 포함한 나눗셈 표현을 쓰면 파싱 오류 발생.
-    // 해결: scale 필터로 1920×1080 확정 후 zoompan 입력 크기(iw=1920,ih=1080)가
-    //        고정되므로 iw/2=960, ih/2=540 으로 상수화.
-    //        zoom 을 1.x로 고정하면 iw/zoom ≈ 1920/1.1 ≈ 1745 → x_center = (1920-1745)/2 ≈ 87
-    //        수식 대신 안전한 상수값을 사용하면 ':' 충돌 없음.
-    // 또한 zoompan 앞에 scale/pad 를 별도 필터로 분리하여 파싱 충돌 방지.
+    // ── 랜덤 카메라 효과 (Ken Burns) ──
+    // zoompan 필터는 매 프레임 소프트웨어 연산으로 극도로 느림 (12초→수분 소요).
+    // 대신 scale+crop 조합으로 구현: GPU 가속 가능, 훨씬 빠름.
+    // 원리: 1920x1080보다 약간 큰 크기로 scale → 시작/끝 crop 좌표를 선형 보간하여
+    //        pan/zoom 효과를 만들고 최종 1920x1080으로 출력.
+    // on=현재프레임번호, d=총프레임수
+    // 확대된 소스 크기: 2112x1188 (1920*1.1 × 1080*1.1, 10% 여유)
     final _randomEffects = [
-      // 줌인 (중앙) — zoom 1.0→1.3, x/y 중앙 고정
-      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=min(zoom+0.0015\\,1.3):x=960-(960/zoom):y=540-(540/zoom):d=$d',
-      // 줌아웃 (중앙) — zoom 1.3→1.0
-      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=if(eq(on\\,1)\\,1.3\\,max(zoom-0.0015\\,1.0)):x=960-(960/zoom):y=540-(540/zoom):d=$d',
-      // 오른쪽 패닝 — zoom 1.1 고정, x 0→우측
-      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=if(eq(on\\,1)\\,0\\,x+2):y=49:d=$d',
-      // 왼쪽 패닝 — zoom 1.1 고정, x 우측→0
-      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=if(eq(on\\,1)\\,174\\,max(x-2\\,0)):y=49:d=$d',
-      // 아래 패닝 — zoom 1.1 고정, y 0→하단
-      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=87:y=if(eq(on\\,1)\\,0\\,y+1):d=$d',
-      // 위 패닝 — zoom 1.1 고정, y 하단→0
-      (int d) => 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,format=yuv420p,zoompan=z=1.1:x=87:y=if(eq(on\\,1)\\,98\\,max(y-1\\,0)):d=$d',
+      // 줌인 (중앙) — crop 크기를 점점 줄여서 zoom-in 효과
+      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,'
+          'crop=2112:1188,'
+          'crop=w=trunc((2112-(2112-1920)*on/$d)/2)*2:h=trunc((1188-(1188-1080)*on/$d)/2)*2'
+          ':x=(2112-trunc((2112-(2112-1920)*on/$d)/2)*2)/2'
+          ':y=(1188-trunc((1188-(1188-1080)*on/$d)/2)*2)/2,'
+          'scale=1920:1080,setsar=1,format=yuv420p',
+      // 줌아웃 (중앙) — crop 크기를 점점 키워서 zoom-out 효과
+      (int d) => 'scale=2112:1188:force_original_aspect_ratio=increase,'
+          'crop=2112:1188,'
+          'crop=w=trunc((1920+(2112-1920)*on/$d)/2)*2:h=trunc((1080+(1188-1080)*on/$d)/2)*2'
+          ':x=(2112-trunc((1920+(2112-1920)*on/$d)/2)*2)/2'
+          ':y=(1188-trunc((1080+(1188-1080)*on/$d)/2)*2)/2,'
+          'scale=1920:1080,setsar=1,format=yuv420p',
+      // 오른쪽 패닝 — x 좌→우
+      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=trunc(192*on/$d/2)*2:y=0,'
+          'setsar=1,format=yuv420p',
+      // 왼쪽 패닝 — x 우→좌
+      (int d) => 'scale=2112:1080:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=trunc(192*(1-on/$d)/2)*2:y=0,'
+          'setsar=1,format=yuv420p',
+      // 아래 패닝 — y 위→아래
+      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=0:y=trunc(108*on/$d/2)*2,'
+          'setsar=1,format=yuv420p',
+      // 위 패닝 — y 아래→위
+      (int d) => 'scale=1920:1188:force_original_aspect_ratio=increase,'
+          'crop=1920:1080:x=0:y=trunc(108*(1-on/$d)/2)*2,'
+          'setsar=1,format=yuv420p',
     ];
 
     // 장면별 필터 생성: 랜덤 효과 ON/OFF 분기
@@ -843,10 +866,10 @@ ${audioCodec}  -r 25 "${safe}_final.mp4"''';
       final scene = scenes[sceneIdx];
       final d = (scene.duration * 25).toInt().clamp(1, 99999);
       if (_includeRandomEffect) {
-        // 랜덤 효과: 장면마다 다른 효과 선택 (연속 같은 효과 방지)
         final effectIdx = sceneIdx % _randomEffects.length;
         final effectFilter = _randomEffects[effectIdx](d);
-        return '[$inputIdx:v]$effectFilter[sv$sceneIdx]';
+        return '[$inputIdx:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,$effectFilter[sv$sceneIdx]';
       }
       // 기본: scale+pad (안정적, 빠름)
       return '[$inputIdx:v]format=yuv420p,'
