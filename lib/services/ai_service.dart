@@ -474,17 +474,28 @@ $styleGuide
     required String prompt,
     String aspectRatio = '16:9',
     String model = 'gemini-3.1-flash-image-preview',
-    String imageSize = '1K',   // "512"(Flash만), "1K", "2K", "4K"
+    String imageSize = '1K',
+    List<Uint8List>? referenceImages, // 캐릭터 참조 이미지들
   }) async {
     final url = '$_baseUrl/models/$model:generateContent?key=$apiKey';
 
+    // parts: 참조 이미지가 있으면 이미지 먼저 → 텍스트 순서로 구성
+    final parts = <Map<String, dynamic>>[];
+    if (referenceImages != null && referenceImages.isNotEmpty) {
+      for (final imgBytes in referenceImages) {
+        parts.add({
+          'inline_data': {
+            'mime_type': 'image/jpeg',
+            'data': base64Encode(imgBytes),
+          }
+        });
+      }
+    }
+    parts.add({'text': prompt});
+
     final body = jsonEncode({
       'contents': [
-        {
-          'parts': [
-            {'text': prompt}
-          ]
-        }
+        {'parts': parts}
       ],
       'generationConfig': {
         'responseModalities': ['TEXT', 'IMAGE'],
